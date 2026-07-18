@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>glb2r3a</title>
+<style>
+body{font:14px monospace;background:#111;color:#ddd;padding:20px;max-width:700px;margin:auto}
+h1{font-size:18px}
+#drop{border:2px dashed #555;padding:40px;text-align:center;cursor:pointer}
+#drop.over{border-color:#0f0}
+#log{white-space:pre-wrap;margin-top:15px;background:#000;padding:10px;min-height:100px}
+a{color:#0f0}
+button{background:#0f0;color:#000;border:0;padding:6px 12px;cursor:pointer;font:inherit;margin-top:8px}
+</style>
+</head>
+<body>
+<h1>glb2r3a</h1>
+<div id="drop">arrastra un .glb aqui o hace click</div>
+<input type="file" id="file" accept=".glb" style="display:none">
+<div id="log"></div>
+<div id="dl"></div>
+
+<script>
+const MAX_FRAMES=4096, MAX_STEPS=4096;
+const log=m=>document.getElementById('log').textContent+=m+"\n";
+
+const drop=document.getElementById('drop'), inp=document.getElementById('file');
+drop.onclick=()=>inp.click();
+drop.ondragover=e=>{e.preventDefault();drop.className='over';};
+drop.ondragleave=()=>drop.className='';
+drop.ondrop=e=>{e.preventDefault();drop.className='';handle(e.dataTransfer.files[0]);};
+inp.onchange=()=>handle(inp.files[0]);
+
+function handle(file){
+  if(!file) return;
+  document.getElementById('log').textContent='';
+  document.getElementById('dl').innerHTML='';
+  const r=new FileReader();
+  r.onload=()=>convert(file.name, r.result);
+  r.readAsArrayBuffer(file);
+}
+
+function convert(name, buf){
+  const dv=new DataView(buf);
+  if(dv.getUint32(0,true)!==0x46546C67){ log('[ERROR] no es GLB'); return; }
+  log('[INFO] glTF v'+dv.getUint32(4,true)+'  '+buf.byteLength+' bytes');
+
+  const j0len=dv.getUint32(12,true);
+  if(dv.getUint32(16,true)!==0x4E4F534A){ log('[ERROR] chunk0 no es JSON'); return; }
+  const json=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,20,j0len)));
+
+  let bin=null;
+  const b1off=20+j0len;
+  if(b1off+8<=buf.byteLength){
+    const blen=dv.getUint32(b1off,true);
+    log('[INFO] BIN '+blen+' bytes');
+    bin=new DataView(buf,b1off+8,blen);
+  }
+
+  const BV=json.bufferViews||[], AC=json.accessors||[];
+  log('[INFO] bufferViews:'+BV.length+'  accessors:'+AC.length);
+
+  function ncOf(t){ return {SCALAR:1,VEC2:2,VEC3:3,VEC4:4,MAT4:16}[t]||1; }
+
+  function readFloats(ai, maxn){
+    const out=[];
+    if(ai==null||ai<0||ai>=AC.length) return out;
+    const a=AC[ai];
+    if(a.bufferView==null) return out;
+    const b=BV[a.bufferView];
+    const nc=ncOf(a.type);
+    const base=(b.byteOffset||0)+(a.byteOffset||0);
+    const stride=b.byteStride||nc*4;
+    const cnt=Math.min(a.count, maxn);
+    for(let i=0;i<cnt;i++){
+      const off=base+i*stride;
+      for(let c=0;c<nc;c++) out.push(bin.getFloat32(off+c*4,true));
+    }
+    return out;
+  }
+
+  /* ── skin -> joints ── */
+  const skins=json.skins||[];
+  if(skins.length===0){ log('[WARN] sin skins'); return; }
+  const skin=skins[0];
+  const nj=skin.joints.length;
+  const n2j={}; skin.joints.forEach((ni,ji)=>n2j[ni]=ji);
+
+  const joints=[];
+  for(let i=0;i<nj;i++) joints.push({parent:-1,name:'joint_'+i,tx:0,ty:0,tz:0,rx:0,ry:0,rz:0,rw:1});
+
+  const nodes=json.nodes||[];
+  nodes.forEach((node,ni)=>{
+    const ji=n2j[ni]; if(ji===undefined) return;
+    const jt=joints[ji];
+    if(node.name) jt.name=node.name;
+    if(node.translation){ [jt.tx,jt.ty,jt.tz]=node.translation; }
+    if(node.rotation){
+      let [rx,ry,rz,rw]=node.rotation;
+      const len=Math.sqrt(rx*rx+ry*ry+rz*rz+rw*rw);
+      if(len>1e-8){ rx/=len;ry/=len;rz/=len;rw/=len; } else { rx=0;ry=0;rz=0;rw=1; }
+      jt.rx=rx; jt.ry=ry; jt.rz=rz; jt.rw=rw;
+    }
+    if(node.children) node.children.forEach(cni=>{
+      if(n2j[cni]!==undefined) joints[n2j[cni]].parent=ji;
+    });
+  });
+
+  /* ── animations ── */
+  const anims=[];
+  (json.animations||[]).forEach((ao,ai)=>{
+    const anim={name:ao.name||('anim_'+ai), duration:0, ch:[]};
+    (ao.channels||[]).forEach(chan=>{
+      const nidx=chan.target.node, path=chan.target.path;
+      const jidx=n2j[nidx];
+      if(jidx===undefined) return;
+      let ptype=-1;
+      if(path==='translation') ptype=0;
+      else if(path==='rotation') ptype=1;
+      else if(path==='scale') ptype=2;
+      if(ptype<0) return;
+      const samp=ao.samplers[chan.sampler];
+      const times=readFloats(samp.input, MAX_FRAMES);
+      const ncomp=(ptype===1)?4:3;
+      const vals=readFloats(samp.output, MAX_FRAMES*4);
+      if(times.length && times[times.length-1]>anim.duration) anim.duration=times[times.length-1];
+      const keys=[];
+      for(let k=0;k<times.length;k++)
+        keys.push({t:times[k], v:vals.slice(k*ncomp,k*ncomp+ncomp)});
+      anim.ch.push({joint:jidx, type:ptype, keys});
+    });
+    anims.push(anim);
+  });
+  log('[INFO] joints:'+nj+'  anims:'+anims.length);
+
+  /* ── bake ── */
+  function chSample(ch,t){
+    let ki=0;
+    for(let k=1;k<ch.keys.length;k++){ if(ch.keys[k].t<=t) ki=k; else break; }
+    return ch.keys[ki].v;
+  }
+  function sampleJoint(anim, ji, t){
+    const j=joints[ji];
+    let tx=j.tx,ty=j.ty,tz=j.tz, rx=j.rx,ry=j.ry,rz=j.rz,rw=j.rw;
+    anim.ch.forEach(ch=>{
+      if(ch.joint!==ji) return;
+      const v=chSample(ch,t);
+      if(ch.type===0){ tx=v[0];ty=v[1];tz=v[2]; }
+      else if(ch.type===1){ rx=v[0];ry=v[1];rz=v[2];rw=v[3]; }
+    });
+    const len=Math.sqrt(rx*rx+ry*ry+rz*rz+rw*rw);
+    if(len>1e-8){ rx/=len;ry/=len;rz/=len;rw/=len; } else { rx=0;ry=0;rz=0;rw=1; }
+    return {tx,ty,tz,rx,ry,rz,rw};
+  }
+  function collectSteps(anim){
+    const s=[];
+    anim.ch.forEach(ch=>ch.keys.forEach(k=>{
+      if(!s.some(x=>Math.abs(x-k.t)<1e-6)) s.push(k.t);
+    }));
+    s.sort((a,b)=>a-b);
+    return s;
+  }
+
+  /* ── packing ── */
+  function pack21(tx,ty,tz){
+    const ix=Math.round(tx*65536.0)|0, iy=Math.round(ty*65536.0)|0, iz=Math.round(tz*65536.0)|0;
+    const px=BigInt((ix>>8)&0x1fffff), py=BigInt((iy>>8)&0x1fffff), pz=BigInt((iz>>8)&0x1fffff);
+    return px | (py<<21n) | (pz<<42n);
+  }
+  function packq(rx,ry,rz,rw){
+    const ix=Math.round(rx*65536.0)|0, iy=Math.round(ry*65536.0)|0, iz=Math.round(rz*65536.0)|0, iw=Math.round(rw*65536.0)|0;
+    const qx=BigInt((ix>>2)&0xffff), qy=BigInt((iy>>2)&0xffff), qz=BigInt((iz>>2)&0xffff), qw=BigInt((iw>>2)&0xffff);
+    return qx | (qy<<16n) | (qz<<32n) | (qw<<48n);
+  }
+  function fp8_8(v){
+    let i=Math.round(v*256.0);
+    if(i<0) i=0; if(i>0xffff) i=0xffff;
+    return i;
+  }
+
+  /* ── write binary ── */
+  const chunks=[]; // array of Uint8Array
+  function u8(v){ chunks.push(Uint8Array.of(v&0xff)); }
+  function u16(v){ const b=new Uint8Array(2); b[0]=v&0xff; b[1]=(v>>8)&0xff; chunks.push(b); }
+  function u32(v){ const b=new Uint8Array(4); for(let i=0;i<4;i++) b[i]=(v>>>(i*8))&0xff; chunks.push(b); }
+  function u64(v){ const b=new Uint8Array(8); for(let i=0;i<8;i++) b[i]=Number((v>>BigInt(i*8))&0xffn); chunks.push(b); }
+
+  /* header */
+  u8(0x72); u8(0x33); u8(0x61); u8(0x00); // "r3a\0"
+  u16(nj);
+  u16(anims.length);
+
+  const stepsPerAnim=anims.map(collectSteps);
+  const headerSz=4+2+2+4*anims.length;
+  const bonesSz=nj*17;
+  let curOff=headerSz+bonesSz;
+  const animSz=[];
+  anims.forEach((anim,ai)=>{
+    const sz=4+stepsPerAnim[ai].length*(2+nj*16);
+    animSz.push(sz);
+  });
+  anims.forEach((anim,ai)=>{ u32(curOff); curOff+=animSz[ai]; });
+
+  /* bones */
+  joints.forEach(j=>{
+    u8(j.parent<0?0xff:j.parent);
+    u64(pack21(j.tx,j.ty,j.tz));
+    u64(packq(j.rx,j.ry,j.rz,j.rw));
+  });
+
+  /* animations */
+  anims.forEach((anim,ai)=>{
+    const steps=stepsPerAnim[ai];
+    u16(steps.length);
+    const speed=(anim.duration>1e-6)?1.0/(anim.duration*60.0):0.0;
+    u16(fp8_8(speed));
+    steps.forEach(t=>{
+      const tn=(anim.duration>1e-6)?t/anim.duration:0.0;
+      u16(fp8_8(tn));
+      for(let ji=0;ji<nj;ji++){
+        const r=sampleJoint(anim,ji,t);
+        u64(pack21(r.tx,r.ty,r.tz));
+        u64(packq(r.rx,r.ry,r.rz,r.rw));
+      }
+    });
+    log('   ['+ai+'] "'+anim.name+'" '+anim.duration.toFixed(3)+'s  '+steps.length+' frames  '+nj+' joints  speed='+speed.toFixed(5));
+  });
+
+  const blob=new Blob(chunks, {type:'application/octet-stream'});
+  const outName=name.replace(/\.glb$/i,'')+'.r3a';
+  const url=URL.createObjectURL(blob);
+
+  log('[OK] '+outName+' ('+blob.size+' bytes)');
+
+  const a=document.createElement('a');
+  a.href=url; a.download=outName; a.textContent='descargar '+outName;
+  a.style.display='block';
+  a.style.marginTop='10px';
+  document.getElementById('dl').appendChild(a);
+}
+</script>
+</body>
+</html>

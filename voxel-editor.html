@@ -1,0 +1,1541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Voxel Editor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;700&display=swap');
+  :root{ --bg:#111; --panel:#1b1b1b; --fg:#eee; --accent:#5ad; --line:#333; }
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; overflow:hidden; }
+  body{ background:var(--bg); color:var(--fg); font:14px/1.4 'Roboto Mono',monospace; display:flex; flex-direction:column; }
+  header{ border-bottom:1px solid var(--line); flex-shrink:0; display:flex; flex-direction:column; }
+  .header-row{ padding:10px 16px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  .header-row + .header-row{ border-top:1px solid var(--line); padding:8px 16px; }
+  header h1{ font-size:16px; margin:0; font-weight:700; letter-spacing:0.5px; }
+  header .hint{ color:#888; font-size:11px; margin-left:auto; }
+  .header-actions{ display:flex; gap:6px; margin-left:auto; flex-wrap:wrap; }
+  .param{ display:flex; align-items:center; gap:6px; font-size:12px; color:#aaa; }
+  .param label{ color:#888; }
+  #main{ flex:1; display:flex; min-height:0; height:0; }
+  #viewport{ flex:1; position:relative; overflow:hidden; }
+  #viewport canvas{ display:block; width:100% !important; height:100% !important; touch-action:none; }
+  #sidebar{ width:260px; border-left:1px solid var(--line); background:var(--panel); padding:12px; overflow-y:auto; display:flex; flex-direction:column; gap:12px; flex-shrink:0; }
+  #sidebar.hidden{ display:none; }
+  #sidebarToggle{ font-size:16px; }
+  #sidebarClose{ display:none; }
+
+  @media (max-width:820px){
+    html, body{ height:100dvh; }
+    header{ position:relative; z-index:40; background:var(--bg); }
+    #sidebar{ position:fixed; top:var(--header-h,88px); right:0; bottom:0; width:82vw; max-width:300px; z-index:30; box-shadow:-6px 0 24px rgba(0,0,0,.6); padding-top:12px; }
+    #sidebarBackdrop{ display:none; position:fixed; inset:0; background:rgba(0,0,0,.4); z-index:25; }
+    #sidebarBackdrop.show{ display:block; }
+    #sidebarClose{ position:absolute; top:8px; right:8px; display:block; }
+    header h1{ font-size:14px; }
+    .header-row{ padding:8px 10px; gap:6px; }
+    .header-row .hint{ display:none; }
+    #axesLabel{ display:none; }
+    .toolbtn{ height:42px; font-size:14px; padding:0 2px; }
+    button.main, button.ghost, button.danger{ padding:9px 10px; font-size:12px; }
+    #stats{ font-size:10px; }
+    input[type=number]{ width:52px; }
+  }
+  .toolrow{ display:flex; gap:4px; flex-wrap:nowrap; }
+  .toolbtn{ flex:1; min-width:0; height:32px; border-radius:6px; border:2px solid transparent; background:#2a2a2a; color:#ddd; cursor:pointer; font-size:14px; display:flex; align-items:center; justify-content:center; padding:0 4px; }
+  .toolbtn.active{ border-color:var(--accent); background:#243b44; }
+  .toolbtn:hover{ background:#333; }
+  .color-picker-wrapper { display:flex; align-items:center; gap:8px; }
+  input[type=color]{ width:36px; height:36px; padding:0; border:2px solid transparent; border-radius:6px; cursor:pointer; background:none; }
+  .palGrid{ display:grid; grid-template-columns: repeat(8, 1fr); gap:4px; margin-top:6px; max-height:340px; overflow-y:auto; overflow-x:hidden; padding-right:2px; }
+  .swatch{ aspect-ratio: 1.2 / 1; border-radius:3px; border:2px solid transparent; cursor:pointer; transition: transform 0.1s, border-color 0.1s; background:#333; }
+  .swatch.active{ border-color:#fff; transform: scale(1.05); }
+  .swatch:hover{ transform: scale(1.08); }
+  .swatch.empty{ cursor:default; background-image: linear-gradient(45deg, #444 25%, transparent 25%), linear-gradient(-45deg, #444 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #444 75%), linear-gradient(-45deg, transparent 75%, #444 75%); background-size:8px 8px; background-position:0 0,0 4px,4px -4px,-4px 0px; }
+  .swatch.empty:hover{ transform:none; }
+  .row{ display:flex; gap:8px; align-items:center; }
+  input[type=number]{ width:60px; background:#000; color:#fff; border:1px solid var(--line); border-radius:4px; padding:5px; font-family:'Roboto Mono',monospace; }
+  button{ font-family:'Roboto Mono',monospace; }
+  button.main{ background:var(--accent); border:none; color:#012; font-weight:600; padding:8px 12px; border-radius:6px; cursor:pointer; font-size:13px; }
+  button.main:hover{ filter:brightness(1.1); }
+  button.ghost{ background:#2a2a2a; color:#ddd; border:1px solid var(--line); padding:6px 10px; border-radius:6px; cursor:pointer; font-size:13px; line-height:1; }
+  button.ghost:hover{ background:#333; }
+  button.danger{ background:#3a1f1f; color:#f88; border:1px solid #522; padding:6px 10px; border-radius:6px; cursor:pointer; font-size:13px; line-height:1; }
+  button.danger:hover{ background:#4a2626; }
+  button.icon{ font-size:16px; padding:6px 10px; }
+  .action-row, .file-row{ display:flex; gap:6px; flex-wrap:wrap; }
+  #status{ font-size:11px; color:#9c9; min-height:16px; }
+  #stats{ font-size:11px; color:#888; }
+  #dropHint{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(0,0,0,.6); color:#ccc; font-size:14px; pointer-events:none; opacity:0; transition:opacity .15s; }
+  #dropHint.show{ opacity:1; }
+  #axesLabel{ position:absolute; bottom:8px; left:8px; font-size:11px; color:#666; }
+  #coordLabel{ position:absolute; top:8px; left:8px; font-size:11px; color:#888; background:rgba(0,0,0,.5); padding:4px 8px; border-radius:4px; display:none; }
+  label.chk{ display:inline-flex; align-items:center; gap:4px; cursor:pointer; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-row">
+    <h1>Voxel Editor</h1>
+    <div class="header-actions">
+      <button class="main" id="exportBtn">Save</button>
+      <button class="ghost" id="importBtn">Load</button>
+      <input type="file" id="importFile" accept=".vox" style="display:none;">
+      <button class="danger" id="clearBtn">Clear</button>
+      <button class="ghost icon" id="sidebarToggle" title="Show/hide panel">☰</button>
+    </div>
+  </div>
+  <div class="header-row">
+    <div class="param">
+      <label for="gridSize">Size</label>
+      <input type="number" id="gridSize" value="16" min="1" max="64">
+      <button class="ghost" id="applySizeBtn">Apply</button>
+    </div>
+    <div class="param">
+      <label class="chk"><input type="checkbox" id="symX"> Mirror X</label>
+    </div>
+    <div class="param">
+      <label class="chk"><input type="checkbox" id="symY"> Mirror Y</label>
+    </div>
+    <div class="param">
+      <label class="chk"><input type="checkbox" id="gridToggle" checked> Grid</label>
+    </div>
+    <div class="param">
+      <input type="color" id="colorPicker" value="#e63946" title="Current color">
+    </div>
+    <div class="param">
+      <button class="ghost icon" id="undoBtn" title="Ctrl+Z">↶</button>
+      <button class="ghost icon" id="redoBtn" title="Ctrl+Y">↷</button>
+      <button class="ghost icon" id="wireBtn" title="Wireframe mode">💡</button>
+    </div>
+    <div id="stats" style="margin-left:auto;">0 voxels</div>
+  </div>
+</header>
+
+<div id="main">
+  <div id="viewport">
+    <div id="coordLabel"></div>
+    <div id="axesLabel">Left click: act | Right click: erase | Double-click palette: edit color | Wheel: zoom</div>
+    <div id="dropHint">Drop .vox file here to load</div>
+  </div>
+
+  <div id="sidebarBackdrop"></div>
+  <div id="sidebar">
+    <button class="ghost icon" id="sidebarClose" title="Close">✕</button>
+    <div class="toolrow" id="toolRow">
+      <button class="toolbtn active" data-tool="add" title="Pencil (Add) [1]">✏️</button>
+      <button class="toolbtn" data-tool="line" title="Line [2]">📏</button>
+      <button class="toolbtn" data-tool="box" title="Filled Box [3]">📦</button>
+      <button class="toolbtn" data-tool="sphere" title="Sphere [6]">⚪</button>
+      <button class="toolbtn" data-tool="paint" title="Paint [4]">🖌️</button>
+      <button class="toolbtn" data-tool="pick" title="Eyedropper [5]">💧</button>
+    </div>
+    <div class="toolrow" id="shiftRow">
+      <button class="toolbtn" id="shiftXNeg" title="Shift X-">◀X</button>
+      <button class="toolbtn" id="shiftXPos" title="Shift X+">X▶</button>
+      <button class="toolbtn" id="shiftYNeg" title="Shift Y-">◀Y</button>
+      <button class="toolbtn" id="shiftYPos" title="Shift Y+">Y▶</button>
+      <button class="toolbtn" id="shiftZNeg" title="Shift Z-">◀Z</button>
+      <button class="toolbtn" id="shiftZPos" title="Shift Z+">Z▶</button>
+    </div>
+
+    <div class="palGrid" id="palette"></div>
+
+    <div id="status"></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ================= Estado ================= */
+const MAX_SIZE = 64;
+const MAX_PREVIEW_POINTS = 4096;
+const SPHERE_RADIUS = 4;
+
+let gridSize = 16;
+
+let voxelData = new Map();
+let colorGroups = new Map();
+let meshInstances = new Map();
+
+let wireLines = null;
+let wireMode = false;
+
+// Generar paleta de 256 entradas estilo .vox: índice 0 = transparente (vacío, no seleccionable)
+// Los 255 restantes: gama arcoíris con brillo creciente + grises, repartidos en bloques de 8 columnas
+function generatePalette() {
+  const colors = [null]; // índice 0: transparente
+  const rows = Math.ceil(255 / 8); // ~32 filas de 8
+  for (let row = 0; row < rows && colors.length < 256; row++) {
+    const t = rows <= 1 ? 0 : row / (rows - 1);
+    const value = 0.18 + 0.68 * t;
+    const saturation = 0.85;
+    for (let col = 0; col < 8 && colors.length < 256; col++) {
+      const hue = col / 8 + row * 0.017;
+      const rgb = hslToRgb(hue % 1, saturation, value);
+      const hex = rgbToHex(Math.round(rgb[0]*255), Math.round(rgb[1]*255), Math.round(rgb[2]*255));
+      colors.push(hex);
+    }
+  }
+  while (colors.length < 256) colors.push('#808080');
+  return colors;
+}
+
+function hslToRgb(h, s, l) {
+  let r, g, b;
+  if (s === 0) {
+    r = g = b = l;
+  } else {
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  return [r, g, b];
+}
+
+let PALETTE = generatePalette();
+
+const toolState = { tool:'add', color:'#e63946' };
+const symState = { x:false, y:false };
+
+let undoStack = [];
+let redoStack = [];
+
+let drawStartCoord = null;
+let previewMeshGroup = new THREE.Group();
+let previewMesh = null;
+let cursorMesh = null;
+
+let isDragging = false;
+let dragButton = 0;
+let lastMouse = {x:0,y:0};
+let leftButtonDown = false;
+let rightButtonDown = false;
+let isClick = false;
+let clickStartPos = {x:0, y:0};
+
+/* ================= Three.js setup ================= */
+const viewport = document.getElementById('viewport');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111111);
+scene.add(previewMeshGroup);
+
+const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 2000);
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(window.devicePixelRatio);
+viewport.appendChild(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(1, 1.6, 1);
+scene.add(dirLight);
+const dirLight2 = new THREE.DirectionalLight(0xffffff, 0.35);
+dirLight2.position.set(-1, -0.5, -1);
+scene.add(dirLight2);
+
+const voxGroup = new THREE.Group();
+scene.add(voxGroup);
+
+let gridHelper = null;
+let limitBox = null;
+let boundsBox = null;
+let groundVisual = null;
+
+const cubeGeo = new THREE.BoxGeometry(1,1,1);
+cubeGeo.translate(0.5,0.5,0.5);
+const edgeGeo = new THREE.EdgesGeometry(cubeGeo);
+
+/* Funciones auxiliares */
+function vkey(x,y,z){ return x+','+y+','+z; }
+function hexToRgb(hex){
+  const m = hex.replace('#','');
+  return { r: parseInt(m.substr(0,2),16), g: parseInt(m.substr(2,2),16), b: parseInt(m.substr(4,2),16) };
+}
+function rgbToHex(r,g,b){
+  return '#' + [r,g,b].map(v=>Math.min(255, Math.max(0, Math.round(v))).toString(16).padStart(2,'0')).join('');
+}
+function clampToGrid(x,y,z){
+  return x>=0 && y>=0 && z>=0 && x<gridSize && y<gridSize && z<gridSize;
+}
+
+/* ================= Gestión de mallas optimizada ================= */
+function syncColorGroups() {
+  colorGroups.clear();
+  for (const [key, v] of voxelData) {
+    const hex = rgbToHex(v.r, v.g, v.b);
+    if (!colorGroups.has(hex)) colorGroups.set(hex, new Set());
+    colorGroups.get(hex).add(key);
+  }
+}
+
+function rebuildColorGroup(hex) {
+  if (meshInstances.has(hex)) {
+    const old = meshInstances.get(hex);
+    voxGroup.remove(old);
+    old.geometry.dispose();
+    old.material.dispose();
+    meshInstances.delete(hex);
+  }
+
+  const keys = colorGroups.get(hex);
+  if (!keys || keys.size === 0) return;
+
+  const count = keys.size;
+  const mat = new THREE.MeshStandardMaterial({ color: hex, roughness: 0.75, metalness: 0.05 });
+  const mesh = new THREE.InstancedMesh(cubeGeo, mat, count);
+  const dummy = new THREE.Object3D();
+  let idx = 0;
+  for (const key of keys) {
+    const [x,y,z] = key.split(',').map(Number);
+    dummy.position.set(x, y, z);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(idx++, dummy.matrix);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.userData.isVoxel = true;
+  voxGroup.add(mesh);
+  meshInstances.set(hex, mesh);
+}
+
+function rebuildAllMeshes() {
+  syncColorGroups();
+  // Purgar meshes de colores que ya no existen (evita "fantasmas" al cargar otro .vox)
+  for (const hex of Array.from(meshInstances.keys())) {
+    if (!colorGroups.has(hex)) {
+      const old = meshInstances.get(hex);
+      voxGroup.remove(old);
+      old.geometry.dispose();
+      old.material.dispose();
+      meshInstances.delete(hex);
+    }
+  }
+  for (const hex of colorGroups.keys()) {
+    rebuildColorGroup(hex);
+  }
+  updateWireframe();
+  updateStats();
+}
+
+/* ================= Modo alambre ================= */
+function updateWireframe() {
+  if (wireLines) {
+    voxGroup.remove(wireLines);
+    wireLines.geometry.dispose();
+    wireLines.material.dispose();
+    wireLines = null;
+  }
+  if (!wireMode || voxelData.size === 0) return;
+
+  const positions = [];
+  for (const v of voxelData.values()) positions.push({x:v.x, y:v.y, z:v.z});
+  const vertexCount = positions.length * 72;
+  const verts = new Float32Array(vertexCount);
+  let idx = 0;
+  const offsets = [
+    [0,0,0, 1,0,0], [1,0,0, 1,1,0], [1,1,0, 0,1,0], [0,1,0, 0,0,0],
+    [0,0,1, 1,0,1], [1,0,1, 1,1,1], [1,1,1, 0,1,1], [0,1,1, 0,0,1],
+    [0,0,0, 0,0,1], [1,0,0, 1,0,1], [1,1,0, 1,1,1], [0,1,0, 0,1,1]
+  ];
+  for (const p of positions) {
+    const ox = p.x, oy = p.y, oz = p.z;
+    for (const [ax,ay,az, bx,by,bz] of offsets) {
+      verts[idx++] = ox + ax;
+      verts[idx++] = oy + ay;
+      verts[idx++] = oz + az;
+      verts[idx++] = ox + bx;
+      verts[idx++] = oy + by;
+      verts[idx++] = oz + bz;
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 });
+  wireLines = new THREE.LineSegments(geo, mat);
+  voxGroup.add(wireLines);
+}
+
+function toggleWireMode() {
+  wireMode = !wireMode;
+  document.getElementById('wireBtn').classList.toggle('active', wireMode);
+  updateWireframe();
+}
+
+/* ================= Aplicación de operaciones ================= */
+function applyOps(ops) {
+  if (ops.length === 0) return;
+  const affectedColors = new Set();
+
+  for (const op of ops) {
+    const k = vkey(op.x, op.y, op.z);
+    if (op.before) {
+      const beforeHex = rgbToHex(op.before.r, op.before.g, op.before.b);
+      const set = colorGroups.get(beforeHex);
+      if (set) {
+        set.delete(k);
+        if (set.size === 0) colorGroups.delete(beforeHex);
+        affectedColors.add(beforeHex);
+      }
+    }
+    if (op.after) {
+      const afterHex = rgbToHex(op.after.r, op.after.g, op.after.b);
+      if (!colorGroups.has(afterHex)) colorGroups.set(afterHex, new Set());
+      colorGroups.get(afterHex).add(k);
+      affectedColors.add(afterHex);
+    }
+    if (op.after) {
+      voxelData.set(k, {x: op.x, y: op.y, z: op.z, ...op.after});
+    } else {
+      voxelData.delete(k);
+    }
+  }
+
+  for (const hex of affectedColors) {
+    rebuildColorGroup(hex);
+  }
+  updateWireframe();
+  updateStats();
+}
+
+/* ================= Desplazamiento / rotación de voxeles (wrap-around) ================= */
+function shiftVoxels(axis, dir){
+  if(voxelData.size === 0) return;
+  const n = gridSize;
+  const current = Array.from(voxelData.values());
+
+  // Nuevo estado: cada voxel se mueve 1 celda en el eje dado, con wrap-around (sale de un lado, entra por el otro)
+  const nextData = new Map();
+  for(const v of current){
+    let x=v.x, y=v.y, z=v.z;
+    if(axis === 'x') x = ((x + dir) % n + n) % n;
+    else if(axis === 'y') y = ((y + dir) % n + n) % n;
+    else if(axis === 'z') z = ((z + dir) % n + n) % n;
+    nextData.set(vkey(x,y,z), {x,y,z, r:v.r, g:v.g, b:v.b});
+  }
+
+  // Construir ops: todas las celdas que cambian de contenido (antes -> después)
+  const allKeys = new Set([...voxelData.keys(), ...nextData.keys()]);
+  const ops = [];
+  for(const k of allKeys){
+    const before = voxelData.get(k) || null;
+    const after = nextData.get(k) || null;
+    const sameColor = before && after && before.r===after.r && before.g===after.g && before.b===after.b;
+    if(sameColor) continue; // sin cambio real en esta celda
+    ops.push({
+      x: after ? after.x : before.x,
+      y: after ? after.y : before.y,
+      z: after ? after.z : before.z,
+      before: before ? {r:before.r,g:before.g,b:before.b} : null,
+      after: after ? {r:after.r,g:after.g,b:after.b} : null
+    });
+  }
+  if(ops.length === 0) return;
+  pushUndo(ops);
+  applyOps(ops); // applyOps usa voxelData.set/delete por key: reemplaza, nunca duplica
+  setStatus(`Shifted ${axis.toUpperCase()} ${dir>0?'+':'-'}1.`);
+}
+
+document.getElementById('shiftXNeg').addEventListener('click', ()=>shiftVoxels('x', -1));
+document.getElementById('shiftXPos').addEventListener('click', ()=>shiftVoxels('x', 1));
+document.getElementById('shiftYNeg').addEventListener('click', ()=>shiftVoxels('y', -1));
+document.getElementById('shiftYPos').addEventListener('click', ()=>shiftVoxels('y', 1));
+document.getElementById('shiftZNeg').addEventListener('click', ()=>shiftVoxels('z', -1));
+document.getElementById('shiftZPos').addEventListener('click', ()=>shiftVoxels('z', 1));
+
+function pushUndo(ops) {
+  undoStack.push(ops);
+  if (undoStack.length > 200) undoStack.shift();
+  redoStack = [];
+}
+
+/* ================= Operaciones de edición ================= */
+function doAdd(x,y,z){
+  if(!clampToGrid(x,y,z)) return;
+  const rgb = hexToRgb(toolState.color);
+  const ops = [];
+  const points = symPoints(x,y,z);
+  for(const [px,py,pz] of points){
+    if(!clampToGrid(px,py,pz)) continue;
+    const k = vkey(px,py,pz);
+    const before = voxelData.get(k) ? {...voxelData.get(k)} : null;
+    ops.push({ x:px,y:py,z:pz, before: before?{r:before.r,g:before.g,b:before.b}:null, after:{r:rgb.r,g:rgb.g,b:rgb.b} });
+  }
+  if(ops.length === 0) return;
+  pushUndo(ops);
+  applyOps(ops);
+}
+
+function doErase(x,y,z){
+  const ops = [];
+  const points = symPoints(x,y,z);
+  for(const [px,py,pz] of points){
+    const k = vkey(px,py,pz);
+    const existing = voxelData.get(k);
+    if(!existing) continue;
+    ops.push({ x:px,y:py,z:pz, before:{r:existing.r,g:existing.g,b:existing.b}, after:null });
+  }
+  if(ops.length === 0) return;
+  pushUndo(ops);
+  applyOps(ops);
+}
+
+function doPaint(x,y,z){
+  const rgb = hexToRgb(toolState.color);
+  const ops = [];
+  const points = symPoints(x,y,z);
+  for(const [px,py,pz] of points){
+    const k = vkey(px,py,pz);
+    const existing = voxelData.get(k);
+    if(!existing) continue;
+    ops.push({ x:px,y:py,z:pz, before:{r:existing.r,g:existing.g,b:existing.b}, after:{r:rgb.r,g:rgb.g,b:rgb.b} });
+  }
+  if(ops.length === 0) return;
+  pushUndo(ops);
+  applyOps(ops);
+}
+
+function doBatchAdd(points) {
+  const rgb = hexToRgb(toolState.color);
+  const ops = [];
+  for (const pt of points) {
+    const syms = symPoints(pt.x, pt.y, pt.z);
+    for (const [px, py, pz] of syms) {
+      if (!clampToGrid(px, py, pz)) continue;
+      const k = vkey(px, py, pz);
+      const before = voxelData.get(k) ? { ...voxelData.get(k) } : null;
+      ops.push({
+        x: px, y: py, z: pz,
+        before: before ? { r: before.r, g: before.g, b: before.b } : null,
+        after: { r: rgb.r, g: rgb.g, b: rgb.b }
+      });
+    }
+  }
+  if (ops.length === 0) return;
+  pushUndo(ops);
+  applyOps(ops);
+}
+
+/* ================= Herramienta Esfera ================= */
+function doSphere(cx, cy, cz, radius) {
+  const rgb = hexToRgb(toolState.color);
+  const ops = [];
+  const r2 = radius * radius;
+  for (let x = Math.max(0, cx - radius); x <= Math.min(gridSize-1, cx + radius); x++) {
+    for (let y = Math.max(0, cy - radius); y <= Math.min(gridSize-1, cy + radius); y++) {
+      for (let z = Math.max(0, cz - radius); z <= Math.min(gridSize-1, cz + radius); z++) {
+        const dx = x - cx, dy = y - cy, dz = z - cz;
+        if (dx*dx + dy*dy + dz*dz <= r2) {
+          const syms = symPoints(x, y, z);
+          for (const [px, py, pz] of syms) {
+            if (!clampToGrid(px, py, pz)) continue;
+            const k = vkey(px, py, pz);
+            const before = voxelData.get(k) ? { ...voxelData.get(k) } : null;
+            ops.push({
+              x: px, y: py, z: pz,
+              before: before ? { r: before.r, g: before.g, b: before.b } : null,
+              after: { r: rgb.r, g: rgb.g, b: rgb.b }
+            });
+          }
+        }
+      }
+    }
+  }
+  if (ops.length === 0) return;
+  pushUndo(ops);
+  applyOps(ops);
+}
+
+/* ================= Simetría ================= */
+function symPoints(x,y,z){
+  if (!symState.x && !symState.y) {
+    return [[x,y,z]];
+  }
+  const pts = new Set();
+  const combos = [[x,y,z]];
+  if(symState.x) combos.push([gridSize-1-x, y, z]);
+  if(symState.y) combos.push([x, gridSize-1-y, z]);
+  if(symState.x && symState.y) combos.push([gridSize-1-x, gridSize-1-y, z]);
+  const out = [];
+  const seen = new Set();
+  for(const c of combos){
+    const k = c.join(',');
+    if(!seen.has(k)){ seen.add(k); out.push(c); }
+  }
+  return out;
+}
+
+/* ================= Deshacer / Rehacer ================= */
+function undo(){
+  if(undoStack.length === 0) return;
+  const ops = undoStack.pop();
+  const inverse = ops.map(o=>({ x:o.x,y:o.y,z:o.z, before:o.after, after:o.before }));
+  redoStack.push(ops);
+  applyOps(inverse);
+}
+function redo(){
+  if(redoStack.length === 0) return;
+  const ops = redoStack.pop();
+  undoStack.push(ops);
+  applyOps(ops);
+}
+
+window.addEventListener('keydown', e=>{
+  if((e.ctrlKey||e.metaKey) && e.key.toLowerCase()==='z' && !e.shiftKey){ e.preventDefault(); undo(); }
+  else if((e.ctrlKey||e.metaKey) && (e.key.toLowerCase()==='y' || (e.key.toLowerCase()==='z'&&e.shiftKey))){ e.preventDefault(); redo(); }
+});
+
+/* ================= Raycasting y Selección ================= */
+const raycaster = new THREE.Raycaster();
+const mouseNDC = new THREE.Vector2();
+const coordLabel = document.getElementById('coordLabel');
+
+function getMouseNDC(evt){
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouseNDC.x = ((evt.clientX - rect.left) / rect.width) * 2 - 1;
+  mouseNDC.y = -((evt.clientY - rect.top) / rect.height) * 2 + 1;
+}
+
+function raycastTargets(){
+  const targets = [];
+  for (const mesh of meshInstances.values()) targets.push(mesh);
+  if (limitBox) targets.push(limitBox);
+  return targets;
+}
+
+function getHitCoords(hit) {
+  if (hit.object.userData.isLimit) {
+    const outNormal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).round();
+    const inNormal = outNormal.clone().negate();
+    const p = hit.point.clone().add(inNormal.clone().multiplyScalar(0.01));
+    let cx = Math.floor(p.x);
+    let cy = Math.floor(p.y);
+    let cz = Math.floor(p.z);
+    cx = Math.max(0, Math.min(gridSize - 1, cx));
+    cy = Math.max(0, Math.min(gridSize - 1, cy));
+    cz = Math.max(0, Math.min(gridSize - 1, cz));
+    return {
+      x: cx, y: cy, z: cz,
+      onGridLimit: true,
+      normal: inNormal
+    };
+  } else if (hit.object.isInstancedMesh && hit.object.userData.isVoxel) {
+    const instanceId = hit.instanceId;
+    const dummy = new THREE.Object3D();
+    hit.object.getMatrixAt(instanceId, dummy.matrix);
+    dummy.position.setFromMatrixPosition(dummy.matrix);
+    const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld).round();
+    return {
+      x: Math.round(dummy.position.x),
+      y: Math.round(dummy.position.y),
+      z: Math.round(dummy.position.z),
+      onGridLimit: false,
+      normal: normal
+    };
+  }
+  return null;
+}
+
+function performActionOnHit(hit, button) {
+  if (!hit) return false;
+  const coords = getHitCoords(hit);
+  if (!coords) return false;
+
+  if (button === 'right') {
+    if (coords.onGridLimit) return false;
+    doErase(coords.x, coords.y, coords.z);
+    return true;
+  }
+
+  if (toolState.tool === 'pick') {
+    if (coords.onGridLimit) return false;
+    const v = voxelData.get(vkey(coords.x, coords.y, coords.z));
+    if (v) setActiveColor(rgbToHex(v.r, v.g, v.b));
+    return true;
+  }
+  if (toolState.tool === 'paint') {
+    if (coords.onGridLimit) return false;
+    doPaint(coords.x, coords.y, coords.z);
+    return true;
+  }
+  if (toolState.tool === 'sphere') {
+    let targetX = coords.x, targetY = coords.y, targetZ = coords.z;
+    if (!coords.onGridLimit && coords.normal) {
+      targetX += coords.normal.x;
+      targetY += coords.normal.y;
+      targetZ += coords.normal.z;
+    }
+    if (clampToGrid(targetX, targetY, targetZ)) {
+      doSphere(targetX, targetY, targetZ, SPHERE_RADIUS);
+      return true;
+    }
+    return false;
+  }
+  if (toolState.tool === 'add') {
+    let targetX = coords.x, targetY = coords.y, targetZ = coords.z;
+    if (!coords.onGridLimit && coords.normal) {
+      targetX += coords.normal.x;
+      targetY += coords.normal.y;
+      targetZ += coords.normal.z;
+    }
+    if (clampToGrid(targetX, targetY, targetZ)) {
+      doAdd(targetX, targetY, targetZ);
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+/* ================= Cursor Guía ================= */
+function updateCursor(targetCoords) {
+  const activeToolsWithCursor = ['add', 'line', 'box', 'sphere'];
+  if (!activeToolsWithCursor.includes(toolState.tool) || !targetCoords) {
+    if (cursorMesh) cursorMesh.visible = false;
+    return;
+  }
+
+  if (!cursorMesh) {
+    const geo = cubeGeo;
+    const mat = new THREE.MeshBasicMaterial({
+      color: toolState.color,
+      transparent: true,
+      opacity: 0.45,
+      depthWrite: false
+    });
+    cursorMesh = new THREE.Mesh(geo, mat);
+    scene.add(cursorMesh);
+  }
+
+  cursorMesh.material.color.set(toolState.color);
+
+  let targetX = targetCoords.x;
+  let targetY = targetCoords.y;
+  let targetZ = targetCoords.z;
+
+  if (toolState.tool === 'add' || toolState.tool === 'sphere') {
+    if (targetCoords.onGridLimit) {
+      targetX = targetCoords.x;
+      targetY = targetCoords.y;
+      targetZ = targetCoords.z;
+    } else if (targetCoords.normal) {
+      targetX += targetCoords.normal.x;
+      targetY += targetCoords.normal.y;
+      targetZ += targetCoords.normal.z;
+    }
+  }
+
+  if (clampToGrid(targetX, targetY, targetZ)) {
+    cursorMesh.position.set(targetX, targetY, targetZ);
+    cursorMesh.visible = !drawStartCoord;
+  } else {
+    cursorMesh.visible = false;
+  }
+}
+
+/* ================= Algoritmo de línea (DDA) ================= */
+function getLinePoints(x1, y1, z1, x2, y2, z2) {
+  const points = [];
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const dz = z2 - z1;
+  const maxStep = Math.max(Math.abs(dx), Math.abs(dy), Math.abs(dz));
+  if (maxStep === 0) {
+    points.push({x: x1, y: y1, z: z1});
+    return points;
+  }
+  const step = 1 / maxStep;
+  for (let t = 0; t <= 1; t += step) {
+    const x = Math.round(x1 + t * dx);
+    const y = Math.round(y1 + t * dy);
+    const z = Math.round(z1 + t * dz);
+    if (points.length === 0 || 
+        points[points.length-1].x !== x || 
+        points[points.length-1].y !== y || 
+        points[points.length-1].z !== z) {
+      points.push({x, y, z});
+    }
+  }
+  return points;
+}
+
+/* ================= Edición Multipunto (Líneas y Cajas) ================= */
+function handleMouseDownLineBox(evt) {
+  if (toolState.tool !== 'line' && toolState.tool !== 'box') return;
+  getMouseNDC(evt);
+  raycaster.setFromCamera(mouseNDC, camera);
+  const hits = raycaster.intersectObjects(raycastTargets(), false);
+  if (hits.length === 0) return;
+  const hit = hits[0];
+  const coords = getHitCoords(hit);
+  if (!coords) return;
+  drawStartCoord = coords.onGridLimit
+    ? { x: coords.x, y: coords.y, z: coords.z }
+    : { x: coords.x + coords.normal.x, y: coords.y + coords.normal.y, z: coords.z + coords.normal.z };
+  if (cursorMesh) cursorMesh.visible = false;
+}
+
+function handleMouseMoveLineBox(evt) {
+  if (!drawStartCoord) return;
+  getMouseNDC(evt);
+  raycaster.setFromCamera(mouseNDC, camera);
+  const hits = raycaster.intersectObjects(raycastTargets(), false);
+  clearPreview();
+  if (hits.length === 0) return;
+  const hit = hits[0];
+  const coords = getHitCoords(hit);
+  if (!coords) return;
+  let currentCoord = coords.onGridLimit
+    ? { x: coords.x, y: coords.y, z: coords.z }
+    : { x: coords.x + coords.normal.x, y: coords.y + coords.normal.y, z: coords.z + coords.normal.z };
+  const points = getActionPoints(drawStartCoord, currentCoord);
+  if (points.length > MAX_PREVIEW_POINTS) points.length = MAX_PREVIEW_POINTS;
+  showPreview(points);
+}
+
+function handleMouseUpLineBox(evt) {
+  if (!drawStartCoord) return;
+  getMouseNDC(evt);
+  raycaster.setFromCamera(mouseNDC, camera);
+  const hits = raycaster.intersectObjects(raycastTargets(), false);
+  clearPreview();
+
+  if (hits.length > 0) {
+    const hit = hits[0];
+    const coords = getHitCoords(hit);
+    if (coords) {
+      let endCoord = coords.onGridLimit
+        ? { x: coords.x, y: coords.y, z: coords.z }
+        : { x: coords.x + coords.normal.x, y: coords.y + coords.normal.y, z: coords.z + coords.normal.z };
+      let points = getActionPoints(drawStartCoord, endCoord);
+      if (points.length > 0) doBatchAdd(points);
+    }
+  }
+  drawStartCoord = null;
+}
+
+function getActionPoints(start, end) {
+  const points = [];
+  if (!clampToGrid(start.x, start.y, start.z)) return points;
+  const ex = Math.max(0, Math.min(gridSize - 1, end.x));
+  const ey = Math.max(0, Math.min(gridSize - 1, end.y));
+  const ez = Math.max(0, Math.min(gridSize - 1, end.z));
+
+  if (toolState.tool === 'line') {
+    return getLinePoints(
+      Math.round(start.x), Math.round(start.y), Math.round(start.z),
+      Math.round(ex), Math.round(ey), Math.round(ez)
+    );
+  } else if (toolState.tool === 'box') {
+    const minX = Math.min(start.x, ex), maxX = Math.max(start.x, ex);
+    const minY = Math.min(start.y, ey), maxY = Math.max(start.y, ey);
+    const minZ = Math.min(start.z, ez), maxZ = Math.max(start.z, ez);
+    for (let x = minX; x <= maxX; x++)
+      for (let y = minY; y <= maxY; y++)
+        for (let z = minZ; z <= maxZ; z++)
+          points.push({ x, y, z });
+  }
+  return points;
+}
+
+function showPreview(points) {
+  clearPreview();
+  if (points.length === 0) return;
+  const mat = new THREE.MeshBasicMaterial({ color: toolState.color, transparent: true, opacity: 0.45 });
+  previewMesh = new THREE.InstancedMesh(cubeGeo, mat, points.length);
+  const dummy = new THREE.Object3D();
+  points.forEach((p, i) => {
+    dummy.position.set(p.x, p.y, p.z);
+    dummy.updateMatrix();
+    previewMesh.setMatrixAt(i, dummy.matrix);
+  });
+  previewMesh.instanceMatrix.needsUpdate = true;
+  previewMeshGroup.add(previewMesh);
+}
+
+function clearPreview() {
+  if (previewMesh) {
+    previewMeshGroup.remove(previewMesh);
+    previewMesh.geometry.dispose();
+    previewMesh.material.dispose();
+    previewMesh = null;
+  }
+}
+
+/* ================= Eventos de puntero (mouse + touch) ================= */
+renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());
+
+// Puntero unificado: pointerdown/move/up cubren mouse, touch y pen.
+// Dos dedos = pan + pinch-zoom. Toque largo con un dedo = borrar (equivale a clic derecho).
+const activePointers = new Map();
+let twoFingerLast = null;
+let pinchStartDist = 0;
+let pinchStartRadius = 0;
+let longPressTimer = null;
+let longPressFired = false;
+const LONG_PRESS_MS = 500;
+
+function ptDist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+function ptMid(a, b){ return { x:(a.x+b.x)/2, y:(a.y+b.y)/2 }; }
+function clearLongPress(){ if(longPressTimer){ clearTimeout(longPressTimer); longPressTimer = null; } }
+
+renderer.domElement.addEventListener('pointerdown', e => {
+  activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  try{ renderer.domElement.setPointerCapture(e.pointerId); }catch(err){}
+
+  if (activePointers.size >= 2) {
+    clearLongPress();
+    drawStartCoord = null; clearPreview();
+    leftButtonDown = false; rightButtonDown = false; isClick = false;
+    isDragging = true; dragButton = 'twofinger';
+    const pts = Array.from(activePointers.values());
+    twoFingerLast = ptMid(pts[0], pts[1]);
+    pinchStartDist = ptDist(pts[0], pts[1]);
+    pinchStartRadius = camState.radius;
+    return;
+  }
+
+  if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+    isDragging = true;
+    dragButton = 'pan';
+    lastMouse = { x: e.clientX, y: e.clientY };
+    e.preventDefault();
+    return;
+  }
+  if (e.button === 2 && e.altKey) {
+    isDragging = true;
+    dragButton = 'rotate';
+    lastMouse = { x: e.clientX, y: e.clientY };
+    return;
+  }
+
+  const button = e.button;
+  if (button === 0) leftButtonDown = true;
+  else if (button === 2) rightButtonDown = true;
+  else return;
+
+  isClick = true;
+  clickStartPos = { x: e.clientX, y: e.clientY };
+  longPressFired = false;
+
+  if (e.pointerType === 'touch' && button === 0) {
+    clearLongPress();
+    longPressTimer = setTimeout(() => {
+      longPressFired = true;
+      getMouseNDC(e);
+      raycaster.setFromCamera(mouseNDC, camera);
+      const hits = raycaster.intersectObjects(raycastTargets(), false);
+      if (hits.length > 0) performActionOnHit(hits[0], 'right');
+      isClick = false; leftButtonDown = false; drawStartCoord = null; clearPreview();
+      if (navigator.vibrate) navigator.vibrate(15);
+    }, LONG_PRESS_MS);
+  }
+
+  if (toolState.tool === 'line' || toolState.tool === 'box') {
+    getMouseNDC(e);
+    raycaster.setFromCamera(mouseNDC, camera);
+    const hits = raycaster.intersectObjects(raycastTargets(), false);
+    if (hits.length === 0) {
+      isDragging = true;
+      dragButton = 'rotate';
+      lastMouse = { x: e.clientX, y: e.clientY };
+    } else {
+      handleMouseDownLineBox(e);
+    }
+  } else {
+    getMouseNDC(e);
+    raycaster.setFromCamera(mouseNDC, camera);
+    const hits = raycaster.intersectObjects(raycastTargets(), false);
+    if (hits.length === 0) {
+      isDragging = true;
+      dragButton = 'rotate';
+      lastMouse = { x: e.clientX, y: e.clientY };
+    }
+  }
+});
+
+window.addEventListener('pointermove', e => {
+  if (activePointers.has(e.pointerId)) activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (dragButton === 'twofinger' && activePointers.size >= 2) {
+    const pts = Array.from(activePointers.values());
+    const mid = ptMid(pts[0], pts[1]);
+    const d = ptDist(pts[0], pts[1]);
+    const dx = mid.x - twoFingerLast.x, dy = mid.y - twoFingerLast.y;
+    const panSpeed = camState.radius * 0.0015;
+    const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+    const up = new THREE.Vector3(0, 0, 1);
+    camState.target.addScaledVector(right, -dx * panSpeed);
+    camState.target.addScaledVector(up, dy * panSpeed);
+    if (pinchStartDist > 10) {
+      camState.radius = Math.max(2, Math.min(400, pinchStartRadius * (pinchStartDist / Math.max(1, d))));
+    }
+    twoFingerLast = mid;
+    updateCamera();
+    return;
+  }
+
+  if (longPressTimer && Math.hypot(e.clientX - clickStartPos.x, e.clientY - clickStartPos.y) > 12) {
+    clearLongPress();
+  }
+
+  if (isDragging) {
+    const dx = e.clientX - lastMouse.x;
+    const dy = e.clientY - lastMouse.y;
+    lastMouse = { x: e.clientX, y: e.clientY };
+    if (dragButton === 'pan') {
+      const panSpeed = camState.radius * 0.0015;
+      const right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+      const up = new THREE.Vector3(0, 0, 1);
+      camState.target.addScaledVector(right, -dx * panSpeed);
+      camState.target.addScaledVector(up, dy * panSpeed);
+      updateCamera();
+    } else if (dragButton === 'rotate') {
+      camState.theta -= dx * 0.008;
+      camState.phi -= dy * 0.008;
+      updateCamera();
+    }
+    if (isClick && (Math.abs(e.clientX - clickStartPos.x) + Math.abs(e.clientY - clickStartPos.y) > 8)) {
+      isClick = false;
+    }
+    return;
+  }
+
+  if (leftButtonDown && (toolState.tool === 'line' || toolState.tool === 'box')) {
+    handleMouseMoveLineBox(e);
+  }
+
+  getMouseNDC(e);
+  raycaster.setFromCamera(mouseNDC, camera);
+  const hits = raycaster.intersectObjects(raycastTargets(), false);
+  if (hits.length === 0) {
+    coordLabel.style.display = 'none';
+    if (cursorMesh) cursorMesh.visible = false;
+    return;
+  }
+  const hit = hits[0];
+  const coords = getHitCoords(hit);
+  if (!coords) { coordLabel.style.display = 'none'; return; }
+  coordLabel.style.display = 'block';
+  coordLabel.textContent = `(${coords.x}, ${coords.y}, ${coords.z})`;
+  updateCursor(coords);
+});
+
+window.addEventListener('pointerup', e => {
+  activePointers.delete(e.pointerId);
+  clearLongPress();
+
+  if (dragButton === 'twofinger') {
+    if (activePointers.size < 2) { isDragging = false; dragButton = null; pinchStartDist = 0; }
+    return;
+  }
+
+  if (longPressFired) {
+    longPressFired = false;
+    isDragging = false;
+    return;
+  }
+
+  const button = e.button;
+
+  if (button === 0) {
+    if (drawStartCoord && (toolState.tool === 'line' || toolState.tool === 'box')) {
+      handleMouseUpLineBox(e);
+    }
+
+    if (isClick && (toolState.tool === 'add' || toolState.tool === 'paint' || toolState.tool === 'pick' || toolState.tool === 'sphere')) {
+      getMouseNDC(e);
+      raycaster.setFromCamera(mouseNDC, camera);
+      const hits = raycaster.intersectObjects(raycastTargets(), false);
+      if (hits.length > 0) {
+        performActionOnHit(hits[0], 'left');
+      }
+    }
+
+    leftButtonDown = false;
+    isClick = false;
+    if (isDragging && dragButton === 'rotate') {
+      isDragging = false;
+    }
+  }
+
+  if (button === 2) {
+    if (isClick) {
+      getMouseNDC(e);
+      raycaster.setFromCamera(mouseNDC, camera);
+      const hits = raycaster.intersectObjects(raycastTargets(), false);
+      if (hits.length > 0) {
+        performActionOnHit(hits[0], 'right');
+      }
+    }
+    rightButtonDown = false;
+    isClick = false;
+    if (isDragging && dragButton === 'rotate') {
+      isDragging = false;
+    }
+  }
+
+  if (button === 0 || button === 2) {
+    isDragging = false;
+  }
+});
+
+renderer.domElement.addEventListener('wheel', e => {
+  e.preventDefault();
+  camState.radius *= (e.deltaY > 0 ? 1.1 : 0.9);
+  camState.radius = Math.max(2, Math.min(400, camState.radius));
+  updateCamera();
+}, { passive: false });
+
+renderer.domElement.addEventListener('pointerleave', e => {
+  if (e.pointerType !== 'touch') {
+    if (cursorMesh) cursorMesh.visible = false;
+    coordLabel.style.display = 'none';
+  }
+});
+
+/* ================= Cámara orbital ================= */
+const camState = { theta: Math.PI*0.28, phi: Math.PI*0.35, radius: gridSize*2.2, target: new THREE.Vector3(0,0,0) };
+function updateCamera(){
+  camState.phi = Math.max(0.05, Math.min(Math.PI-0.05, camState.phi));
+  const { theta, phi, radius, target } = camState;
+  camera.position.set(
+    target.x + radius*Math.sin(phi)*Math.cos(theta),
+    target.y + radius*Math.sin(phi)*Math.sin(theta),
+    target.z + radius*Math.cos(phi)
+  );
+  camera.up.set(0,0,1);
+  camera.lookAt(target);
+}
+
+function resetCamera(){
+  camState.target.set(gridSize/2, gridSize/2, gridSize/2);
+  camState.radius = gridSize*2.2;
+  updateCamera();
+}
+
+/* ================= Elementos auxiliares de la escena ================= */
+function buildLimitPlanes() {
+  if (limitBox) scene.remove(limitBox);
+  const geo = new THREE.BoxGeometry(gridSize, gridSize, gridSize);
+  geo.translate(gridSize/2, gridSize/2, gridSize/2);
+  const mat = new THREE.MeshBasicMaterial({ visible: false, side: THREE.BackSide });
+  limitBox = new THREE.Mesh(geo, mat);
+  limitBox.userData = { isLimit: true };
+  scene.add(limitBox);
+}
+
+function buildGridHelper(){
+  if(gridHelper) scene.remove(gridHelper);
+  const g = new THREE.GridHelper(gridSize, gridSize, 0x555555, 0x2a2a2a);
+  g.rotation.x = Math.PI/2;
+  g.position.set(gridSize/2, gridSize/2, 0);
+  g.material.opacity = 0.5;
+  g.material.transparent = true;
+  gridHelper = g;
+  scene.add(gridHelper);
+}
+
+function buildBounds(){
+  if(boundsBox) scene.remove(boundsBox);
+  const geo = new THREE.BoxGeometry(gridSize, gridSize, gridSize);
+  const edges = new THREE.EdgesGeometry(geo);
+  boundsBox = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color:0x444444 }));
+  boundsBox.position.set(gridSize/2, gridSize/2, gridSize/2);
+  scene.add(boundsBox);
+}
+
+function toggleGroundVisual(show){
+  if(groundVisual){ scene.remove(groundVisual); groundVisual = null; }
+  if(show){
+    const geo = new THREE.PlaneGeometry(gridSize, gridSize);
+    const mat = new THREE.MeshBasicMaterial({ color:0x1a1a1a, side:THREE.DoubleSide, transparent:true, opacity:0.5 });
+    groundVisual = new THREE.Mesh(geo, mat);
+    groundVisual.position.set(gridSize/2, gridSize/2, -0.001);
+    scene.add(groundVisual);
+  }
+}
+
+function updateStats(){
+  document.getElementById('stats').textContent = `${voxelData.size} voxel${voxelData.size===1?'':'s'} · grid ${gridSize}³`;
+}
+
+/* ================= Eventos UI ================= */
+function setActiveColor(hex){
+  toolState.color = hex;
+  document.getElementById('colorPicker').value = hex;
+  document.querySelectorAll('.swatch').forEach(s=>{
+    if(!s.dataset.color) return;
+    s.classList.toggle('active', s.dataset.color.toLowerCase()===hex.toLowerCase());
+  });
+  if (cursorMesh) cursorMesh.material.color.set(hex);
+}
+
+document.getElementById('colorPicker').addEventListener('input', e=>{
+  setActiveColor(e.target.value);
+});
+
+function renderPalette(){
+  const pal = document.getElementById('palette');
+  pal.innerHTML = '';
+  PALETTE.forEach((colorHex, index)=>{
+    const btn = document.createElement('div');
+    btn.dataset.index = index;
+    if(colorHex === null){
+      btn.className = 'swatch empty';
+      btn.title = 'Transparent (empty)';
+      pal.appendChild(btn);
+      return;
+    }
+    btn.className = 'swatch';
+    btn.style.background = colorHex;
+    btn.dataset.color = colorHex;
+    btn.title = "Click para usar / Doble click para editar";
+    btn.addEventListener('click', ()=> setActiveColor(colorHex));
+    btn.addEventListener('dblclick', (e)=> {
+      e.preventDefault();
+      const tempPicker = document.createElement('input');
+      tempPicker.type = 'color';
+      tempPicker.value = PALETTE[index];
+      tempPicker.style.position = 'absolute';
+      tempPicker.style.opacity = '0';
+      tempPicker.style.pointerEvents = 'none';
+      document.body.appendChild(tempPicker);
+      tempPicker.addEventListener('input', (event) => {
+        const newColor = event.target.value;
+        PALETTE[index] = newColor;
+        btn.style.background = newColor;
+        btn.dataset.color = newColor;
+        setActiveColor(newColor);
+      });
+      tempPicker.addEventListener('change', () => tempPicker.remove());
+      tempPicker.click();
+    });
+    pal.appendChild(btn);
+  });
+  document.querySelectorAll('.swatch').forEach(s=>{
+    if(!s.dataset.color) return;
+    s.classList.toggle('active', s.dataset.color.toLowerCase()===toolState.color.toLowerCase());
+  });
+}
+renderPalette();
+
+document.getElementById('toolRow').addEventListener('click', e=>{
+  const btn = e.target.closest('.toolbtn');
+  if(!btn) return;
+  setTool(btn.dataset.tool);
+});
+
+function setTool(tool) {
+  document.querySelectorAll('#toolRow .toolbtn').forEach(b=>b.classList.remove('active'));
+  document.querySelector(`#toolRow .toolbtn[data-tool="${tool}"]`).classList.add('active');
+  toolState.tool = tool;
+  drawStartCoord = null;
+  clearPreview();
+  if (cursorMesh) {
+    const activeToolsWithCursor = ['add', 'line', 'box', 'sphere'];
+    cursorMesh.visible = activeToolsWithCursor.includes(tool);
+  }
+}
+
+// Atajos de teclado: 1-6
+window.addEventListener('keydown', e => {
+  const key = e.key;
+  if (key >= '1' && key <= '6') {
+    const tools = ['add', 'line', 'box', 'paint', 'pick', 'sphere'];
+    const idx = parseInt(key) - 1;
+    if (tools[idx]) {
+      e.preventDefault();
+      setTool(tools[idx]);
+    }
+  }
+});
+
+document.getElementById('symX').addEventListener('change', e=> symState.x = e.target.checked);
+document.getElementById('symY').addEventListener('change', e=> symState.y = e.target.checked);
+document.getElementById('gridToggle').addEventListener('change', e=>{
+  if(gridHelper) gridHelper.visible = e.target.checked;
+});
+
+document.getElementById('wireBtn').addEventListener('click', toggleWireMode);
+
+document.getElementById('applySizeBtn').addEventListener('click', ()=>{
+  let n = parseInt(document.getElementById('gridSize').value) || 16;
+  n = Math.max(1, Math.min(MAX_SIZE, n));
+  document.getElementById('gridSize').value = n;
+  if(n < gridSize){
+    for(const [k,v] of voxelData){
+      if(v.x>=n||v.y>=n||v.z>=n){ voxelData.delete(k); }
+    }
+  }
+  gridSize = n;
+  buildGridHelper();
+  buildLimitPlanes();
+  buildBounds();
+  toggleGroundVisual(true);
+  rebuildAllMeshes();
+  resetCamera();
+  setStatus(`Grid resized to ${gridSize}³`);
+});
+
+document.getElementById('clearBtn').addEventListener('click', ()=>{
+  if(voxelData.size === 0) return;
+  if(!confirm('Clear all voxels?')) return;
+  const ops = Array.from(voxelData.values()).map(v=>({x:v.x,y:v.y,z:v.z, before:{r:v.r,g:v.g,b:v.b}, after:null}));
+  pushUndo(ops);
+  applyOps(ops);
+  setStatus('Grid cleared.');
+});
+
+document.getElementById('undoBtn').addEventListener('click', undo);
+document.getElementById('redoBtn').addEventListener('click', redo);
+
+function setSidebarOpen(open){
+  document.getElementById('sidebar').classList.toggle('hidden', !open);
+  document.getElementById('sidebarBackdrop').classList.toggle('show', open && window.innerWidth <= 820);
+  resizeRenderer();
+}
+function syncHeaderHeight(){
+  document.documentElement.style.setProperty('--header-h', document.querySelector('header').offsetHeight + 'px');
+}
+window.addEventListener('resize', syncHeaderHeight);
+syncHeaderHeight();
+document.getElementById('sidebarToggle').addEventListener('click', ()=>{
+  setSidebarOpen(document.getElementById('sidebar').classList.contains('hidden'));
+});
+document.getElementById('sidebarClose').addEventListener('click', ()=> setSidebarOpen(false));
+document.getElementById('sidebarBackdrop').addEventListener('click', ()=> setSidebarOpen(false));
+
+function setStatus(msg){
+  document.getElementById('status').textContent = msg;
+}
+
+/* ================= Exportar / Importar .vox ================= */
+function writeVox(size, voxelList){
+  const N = Math.min(size, 256);
+  const clipped = voxelList.filter(v=>v.x<N && v.y<N && v.z<N);
+
+  function u32(n){ const b=new Uint8Array(4); new DataView(b.buffer).setUint32(0,n,true); return b; }
+  function chunk(id, content, childrenBytes=new Uint8Array(0)){
+    const idBytes = new TextEncoder().encode(id);
+    const header = concat([idBytes, u32(content.length), u32(childrenBytes.length)]);
+    return concat([header, content, childrenBytes]);
+  }
+  function concat(arrs){
+    let len=0; for(const a of arrs) len+=a.length;
+    const out = new Uint8Array(len);
+    let o=0; for(const a of arrs){ out.set(a,o); o+=a.length; }
+    return out;
+  }
+
+  const colorKey = v => `${v.r},${v.g},${v.b}`;
+  const uniqueColors = [];
+  const colorIndex = new Map();
+  for(const v of clipped){
+    const k = colorKey(v);
+    if(!colorIndex.has(k)){
+      if(uniqueColors.length < 255){
+        colorIndex.set(k, uniqueColors.length + 1);
+        uniqueColors.push([v.r, v.g, v.b]);
+      } else {
+        colorIndex.set(k, 255);
+      }
+    }
+  }
+
+  const sizeContent = concat([u32(N), u32(N), u32(N)]);
+  const sizeChunk = chunk('SIZE', sizeContent);
+
+  const xyziParts = [u32(clipped.length)];
+  for(const v of clipped){
+    const ci = colorIndex.get(colorKey(v));
+    xyziParts.push(new Uint8Array([v.x, v.y, v.z, ci]));
+  }
+  const xyziChunk = chunk('XYZI', concat(xyziParts));
+
+  const palette = new Uint8Array(256*4);
+  for(let i=0;i<256;i++){ palette[i*4+0]=255; palette[i*4+1]=255; palette[i*4+2]=255; palette[i*4+3]=255; }
+  for(let i=0;i<uniqueColors.length;i++){
+    const [r,g,b] = uniqueColors[i];
+    palette[i*4+0]=r; palette[i*4+1]=g; palette[i*4+2]=b; palette[i*4+3]=255;
+  }
+  const rgbaChunk = chunk('RGBA', palette);
+
+  const modelChildren = concat([sizeChunk, xyziChunk]);
+  const mainChildren = concat([modelChildren, rgbaChunk]);
+  const mainChunk = chunk('MAIN', new Uint8Array(0), mainChildren);
+
+  const magic = new TextEncoder().encode('VOX ');
+  const version = u32(150);
+  return concat([magic, version, mainChunk]);
+}
+
+function readVox(buffer){
+  const dv = new DataView(buffer);
+  const dec = new TextDecoder();
+  let offset = 0;
+  function readStr(n){ const s = dec.decode(new Uint8Array(buffer, offset, n)); offset+=n; return s; }
+  function readU32(){ const v = dv.getUint32(offset, true); offset+=4; return v; }
+
+  const magic = readStr(4);
+  if(magic !== 'VOX ') throw new Error('Not a valid .vox file');
+  readU32();
+
+  let size = { x:0,y:0,z:0 };
+  let xyzi = [];
+  let palette = null;
+
+  function readChunk(){
+    const id = readStr(4);
+    const contentLen = readU32();
+    const childrenLen = readU32();
+    const contentStart = offset;
+    if(id === 'SIZE'){
+      size.x = dv.getUint32(offset, true); offset+=4;
+      size.y = dv.getUint32(offset, true); offset+=4;
+      size.z = dv.getUint32(offset, true); offset+=4;
+    } else if(id === 'XYZI'){
+      const n = dv.getUint32(offset, true); offset+=4;
+      for(let i=0;i<n;i++){
+        const x = dv.getUint8(offset), y = dv.getUint8(offset+1), z = dv.getUint8(offset+2), c = dv.getUint8(offset+3);
+        offset += 4;
+        xyzi.push({x,y,z,c});
+      }
+    } else if(id === 'RGBA'){
+      palette = new Uint8Array(buffer, offset, 256*4).slice();
+      offset += 256*4;
+    }
+    offset = contentStart + contentLen;
+    const childrenEnd = offset + childrenLen;
+    while(offset < childrenEnd) readChunk();
+  }
+
+  readStr(4);
+  readU32(); readU32();
+  const mainChildrenEnd = buffer.byteLength;
+  while(offset < mainChildrenEnd) readChunk();
+
+  const result = [];
+  for(const v of xyzi){
+    let r=255,g=255,b=255;
+    if(palette){
+      const pi = (v.c - 1) * 4;
+      if(pi>=0 && pi < palette.length){ r=palette[pi]; g=palette[pi+1]; b=palette[pi+2]; }
+    }
+    result.push({ x:v.x, y:v.y, z:v.z, r,g,b });
+  }
+  const maxDim = Math.max(size.x, size.y, size.z, 1);
+  return { size: maxDim, voxels: result, palette };
+}
+
+document.getElementById('exportBtn').addEventListener('click', ()=>{
+  if(voxelData.size === 0){ setStatus('No voxels to export.'); return; }
+  const bytes = writeVox(gridSize, Array.from(voxelData.values()));
+  const blob = new Blob([bytes], {type:'application/octet-stream'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'model.vox';
+  a.click();
+  setStatus(`Exported: ${voxelData.size} voxels.`);
+});
+
+document.getElementById('importBtn').addEventListener('click', ()=>{
+  document.getElementById('importFile').click();
+});
+document.getElementById('importFile').addEventListener('change', e=>{
+  const file = e.target.files[0];
+  if(file) loadVoxFile(file);
+});
+
+function loadVoxFile(file){
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const { size, voxels: loaded, palette: filePalette } = readVox(reader.result);
+      const n = Math.max(1, Math.min(MAX_SIZE, size));
+      gridSize = n;
+      document.getElementById('gridSize').value = n;
+      // Reemplazar completamente el modelo actual
+      voxelData.clear();
+      for(const v of loaded){
+        if(v.x<n && v.y<n && v.z<n) voxelData.set(vkey(v.x,v.y,v.z), v);
+      }
+      // Ajustar la paleta del editor a la paleta real del archivo .vox (index 0 = transparente)
+      if(filePalette){
+        const newPal = [null];
+        for(let i=0;i<255;i++){
+          const r=filePalette[i*4], g=filePalette[i*4+1], b=filePalette[i*4+2];
+          newPal.push(rgbToHex(r,g,b));
+        }
+        PALETTE = newPal;
+      } else {
+        PALETTE = generatePalette();
+      }
+      renderPalette();
+      undoStack = []; redoStack = [];
+      buildGridHelper(); buildLimitPlanes(); buildBounds();
+      toggleGroundVisual(true);
+      rebuildAllMeshes();
+      resetCamera();
+      setStatus(`Loaded: ${voxelData.size} voxels, grid ${n}³.`);
+    } catch(err){
+      setStatus('Error reading file: ' + err.message);
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+const dropHint = document.getElementById('dropHint');
+['dragenter','dragover'].forEach(ev=>{
+  viewport.addEventListener(ev, e=>{ e.preventDefault(); dropHint.classList.add('show'); });
+});
+['dragleave','drop'].forEach(ev=>{
+  viewport.addEventListener(ev, e=>{ e.preventDefault(); dropHint.classList.remove('show'); });
+});
+viewport.addEventListener('drop', e=>{
+  const file = e.dataTransfer.files[0];
+  if(file && file.name.toLowerCase().endsWith('.vox')) loadVoxFile(file);
+});
+
+/* ================= Resize / loop ================= */
+function resizeRenderer(){
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w/h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resizeRenderer);
+
+function animate(){
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+
+/* ================= Inicialización ================= */
+function init(){
+  if (window.innerWidth <= 820) document.getElementById('sidebar').classList.add('hidden');
+  syncHeaderHeight();
+  gridSize = Math.max(1, Math.min(MAX_SIZE, parseInt(document.getElementById('gridSize').value)||16));
+  buildGridHelper();
+  buildLimitPlanes();
+  buildBounds();
+  toggleGroundVisual(true);
+  rebuildAllMeshes();
+  resizeRenderer();
+  resetCamera();
+  animate();
+}
+init();
+</script>
+</body>
+</html>

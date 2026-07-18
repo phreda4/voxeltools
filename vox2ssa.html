@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>vox2ssa — Generador de atlas de stacked sprites</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#181b21; --border:#2a2f3a; --text:#e6e8eb;
+    --muted:#8b93a3; --accent:#5b8cff; --accent2:#33c47a; --warn:#e0a63a; --err:#e05a5a;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; padding:24px; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  h1{font-size:20px; margin:0 0 4px}
+  p.sub{color:var(--muted); margin:0 0 20px; font-size:13px}
+  .panel{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:18px; margin-bottom:16px; max-width:820px;
+  }
+  .row{display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; margin-bottom:12px}
+  label{display:block; font-size:12px; color:var(--muted); margin-bottom:4px}
+  select, input[type=text]{
+    background:#0f1218; color:var(--text); border:1px solid var(--border);
+    border-radius:6px; padding:6px 8px; font-size:13px;
+  }
+  .dropzone{
+    border:2px dashed var(--border); border-radius:8px; padding:24px; text-align:center;
+    color:var(--muted); cursor:pointer; font-size:13px; transition:border-color .15s;
+  }
+  .dropzone.drag{border-color:var(--accent); color:var(--text)}
+  #fileInput{display:none}
+  ul#fileList{list-style:none; margin:10px 0 0; padding:0; font-size:12px; color:var(--muted); max-height:140px; overflow:auto}
+  ul#fileList li{padding:2px 0; display:flex; justify-content:space-between; gap:8px}
+  ul#fileList li span.rm{cursor:pointer; color:var(--err)}
+  button{
+    background:var(--accent); color:#fff; border:none; border-radius:6px;
+    padding:9px 18px; font-size:13px; cursor:pointer; font-weight:600;
+  }
+  button:disabled{background:#3a3f4b; color:var(--muted); cursor:default}
+  button.secondary{background:#2a2f3a}
+  label.chk{display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text)}
+  pre#log{
+    background:#0a0c10; border:1px solid var(--border); border-radius:8px;
+    padding:12px; font-size:12px; line-height:1.5; max-height:320px; overflow:auto;
+    white-space:pre-wrap; word-break:break-word; color:#b7bfcc;
+  }
+  .results{display:flex; gap:16px; flex-wrap:wrap; align-items:flex-start}
+  .results img{
+    max-width:420px; image-rendering:pixelated; border:1px solid var(--border);
+    border-radius:6px; background:
+      linear-gradient(45deg,#222 25%,transparent 25%),
+      linear-gradient(-45deg,#222 25%,transparent 25%),
+      linear-gradient(45deg,transparent 75%,#222 75%),
+      linear-gradient(-45deg,transparent 75%,#222 75%);
+    background-size:16px 16px; background-position:0 0,0 8px,8px -8px,-8px 0px;
+  }
+  .dl-list{display:flex; flex-direction:column; gap:8px; min-width:200px}
+  .dl-list a{
+    color:var(--accent); text-decoration:none; font-size:13px; border:1px solid var(--border);
+    padding:8px 10px; border-radius:6px; background:#0f1218;
+  }
+  .dl-list a:hover{border-color:var(--accent)}
+  .stat{font-size:12px; color:var(--muted); margin-top:6px}
+  .hidden{display:none !important}
+</style>
+</head>
+<body>
+
+<h1>vox2ssa</h1>
+<p class="sub">Convierte archivos .vox (MagicaVoxel) a un atlas de stacked sprites (.png + .ssa + .map + .txt). Todo corre en el navegador, no se sube nada a ningún servidor.</p>
+
+<div class="panel">
+  <div id="dropzone" class="dropzone">
+    Arrastrá acá tus archivos .vox, o hacé click para elegirlos
+    <input id="fileInput" type="file" accept=".vox" multiple>
+  </div>
+  <ul id="fileList"></ul>
+
+  <div class="row" style="margin-top:16px">
+    <div>
+      <label for="atlasWidth">Ancho del atlas</label>
+      <select id="atlasWidth">
+        <option value="1024" selected>1024 px</option>
+        <option value="2048">2048 px</option>
+        <option value="4096">4096 px</option>
+      </select>
+    </div>
+    <div>
+      <label for="outName">Nombre de salida</label>
+      <input id="outName" type="text" value="sprites">
+    </div>
+    <div>
+      <label class="chk"><input id="trimXY" type="checkbox"> Recortar bounding box XY (-trim)</label>
+    </div>
+  </div>
+
+  <button id="runBtn">Generar atlas</button>
+</div>
+
+<div class="panel">
+  <pre id="log">Esperando archivos…</pre>
+</div>
+
+<div class="panel hidden" id="resultsPanel">
+  <div class="results">
+    <div>
+      <img id="atlasPreview" alt="atlas">
+      <div class="stat" id="atlasStat"></div>
+    </div>
+    <div class="dl-list" id="downloads"></div>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+/* ════════════════════════════════════════════════════════════════
+ * Paleta por defecto de MagicaVoxel (ABGR empaquetado, LE) -> [r,g,b,a]
+ * ════════════════════════════════════════════════════════════════ */
+const DEFAULT_PALETTE_ABGR = [
+  0x00000000, 0xffffffff, 0xffccffff, 0xff99ffff, 0xff66ffff, 0xff33ffff, 0xff00ffff, 0xffffccff,
+  0xffccccff, 0xff99ccff, 0xff66ccff, 0xff33ccff, 0xff00ccff, 0xffff99ff, 0xffcc99ff, 0xff9999ff,
+  0xff6699ff, 0xff3399ff, 0xff0099ff, 0xffff66ff, 0xffcc66ff, 0xff9966ff, 0xff6666ff, 0xff3366ff,
+  0xff0066ff, 0xffff33ff, 0xffcc33ff, 0xff9933ff, 0xff6633ff, 0xff3333ff, 0xff0033ff, 0xffff00ff,
+  0xffcc00ff, 0xff9900ff, 0xff6600ff, 0xff3300ff, 0xff0000ff, 0xffffffcc, 0xffccffcc, 0xff99ffcc,
+  0xff66ffcc, 0xff33ffcc, 0xff00ffcc, 0xffffcccc, 0xffcccccc, 0xff99cccc, 0xff66cccc, 0xff33cccc,
+  0xff00cccc, 0xffff99cc, 0xffcc99cc, 0xff9999cc, 0xff6699cc, 0xff3399cc, 0xff0099cc, 0xffff66cc,
+  0xffcc66cc, 0xff9966cc, 0xff6666cc, 0xff3366cc, 0xff0066cc, 0xffff33cc, 0xffcc33cc, 0xff9933cc,
+  0xff6633cc, 0xff3333cc, 0xff0033cc, 0xffff00cc, 0xffcc00cc, 0xff9900cc, 0xff6600cc, 0xff3300cc,
+  0xff0000cc, 0xffffff99, 0xffccff99, 0xff99ff99, 0xff66ff99, 0xff33ff99, 0xff00ff99, 0xffffcc99,
+  0xffcccc99, 0xff99cc99, 0xff66cc99, 0xff33cc99, 0xff00cc99, 0xffff9999, 0xffcc9999, 0xff999999,
+  0xff669999, 0xff339999, 0xff009999, 0xffff6699, 0xffcc6699, 0xff996699, 0xff666699, 0xff336699,
+  0xff006699, 0xffff3399, 0xffcc3399, 0xff993399, 0xff663399, 0xff333399, 0xff003399, 0xffff0099,
+  0xffcc0099, 0xff990099, 0xff660099, 0xff330099, 0xff000099, 0xffffff66, 0xffccff66, 0xff99ff66,
+  0xff66ff66, 0xff33ff66, 0xff00ff66, 0xffffcc66, 0xffcccc66, 0xff99cc66, 0xff66cc66, 0xff33cc66,
+  0xff00cc66, 0xffff9966, 0xffcc9966, 0xff999966, 0xff669966, 0xff339966, 0xff009966, 0xffff6666,
+  0xffcc6666, 0xff996666, 0xff666666, 0xff336666, 0xff006666, 0xffff3366, 0xffcc3366, 0xff993366,
+  0xff663366, 0xff333366, 0xff003366, 0xffff0066, 0xffcc0066, 0xff990066, 0xff660066, 0xff330066,
+  0xff000066, 0xffffff33, 0xffccff33, 0xff99ff33, 0xff66ff33, 0xff33ff33, 0xff00ff33, 0xffffcc33,
+  0xffcccc33, 0xff99cc33, 0xff66cc33, 0xff33cc33, 0xff00cc33, 0xffff9933, 0xffcc9933, 0xff999933,
+  0xff669933, 0xff339933, 0xff009933, 0xffff6633, 0xffcc6633, 0xff996633, 0xff666633, 0xff336633,
+  0xff006633, 0xffff3333, 0xffcc3333, 0xff993333, 0xff663333, 0xff333333, 0xff003333, 0xffff0033,
+  0xffcc0033, 0xff990033, 0xff660033, 0xff330033, 0xff000033, 0xffffff00, 0xffccff00, 0xff99ff00,
+  0xff66ff00, 0xff33ff00, 0xff00ff00, 0xffffcc00, 0xffcccc00, 0xff99cc00, 0xff66cc00, 0xff33cc00,
+  0xff00cc00, 0xffff9900, 0xffcc9900, 0xff999900, 0xff669900, 0xff339900, 0xff009900, 0xffff6600,
+  0xffcc6600, 0xff996600, 0xff666600, 0xff336600, 0xff006600, 0xffff3300, 0xffcc3300, 0xff993300,
+  0xff663300, 0xff333300, 0xff003300, 0xffff0000, 0xffcc0000, 0xff990000, 0xff660000, 0xff330000,
+  0xff0000ee, 0xff0000dd, 0xff0000bb, 0xff0000aa, 0xff000088, 0xff000077, 0xff000055, 0xff000044,
+  0xff000022, 0xff000011, 0xff00ee00, 0xff00dd00, 0xff00bb00, 0xff00aa00, 0xff008800, 0xff007700,
+  0xff005500, 0xff004400, 0xff002200, 0xff001100, 0xffee0000, 0xffdd0000, 0xffbb0000, 0xffaa0000,
+  0xff880000, 0xff770000, 0xff550000, 0xff440000, 0xff220000, 0xff110000, 0xffeeeeee, 0xffdddddd,
+  0xffbbbbbb, 0xffaaaaaa, 0xff888888, 0xff777777, 0xff555555, 0xff444444, 0xff222222, 0xff111111,
+];
+
+function makeDefaultPalette(){
+  const pal = new Uint8Array(256*4);
+  for(let i=0;i<256;i++){
+    const v = DEFAULT_PALETTE_ABGR[i];
+    pal[i*4+0] = v & 0xFF;          // r
+    pal[i*4+1] = (v>>>8) & 0xFF;    // g
+    pal[i*4+2] = (v>>>16) & 0xFF;   // b
+    pal[i*4+3] = (v>>>24) & 0xFF;   // a
+  }
+  return pal;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * CRC32 (para deduplicar tiles idénticos)
+ * ════════════════════════════════════════════════════════════════ */
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for(let n=0;n<256;n++){
+    let c = n;
+    for(let k=0;k<8;k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes){
+  let c = 0xFFFFFFFF;
+  for(let i=0;i<bytes.length;i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Parser de archivos .vox (MagicaVoxel) — formato de chunks
+ * Basado en tc_vox.h; sólo extrae lo necesario para vox2ssa:
+ * modelos (SIZE/XYZI), paleta (RGBA), árbol de nodos (nTRN/nGRP/nSHP/LAYR)
+ * ════════════════════════════════════════════════════════════════ */
+const REF_NONE=0, REF_GROUP=1, REF_TRANSFORM=2, REF_SHAPE=3;
+
+function readChunkHeader(dv, offset){
+  const tag = String.fromCharCode(dv.getUint8(offset), dv.getUint8(offset+1), dv.getUint8(offset+2), dv.getUint8(offset+3));
+  const nbytesData = dv.getUint32(offset+4, true);
+  const nbytesChildren = dv.getUint32(offset+8, true);
+  const offsetData = offset + 12;
+  const offsetChildren = offsetData + nbytesData;
+  const offsetEnd = offsetChildren + nbytesChildren;
+  return {tag, nbytesData, nbytesChildren, offsetData, offsetChildren, offsetEnd};
+}
+
+function readString(dv, offset){
+  const len = dv.getUint32(offset, true);
+  const bytes = new Uint8Array(dv.buffer, dv.byteOffset + offset + 4, len);
+  const str = new TextDecoder("utf-8").decode(bytes);
+  return {str, next: offset + 4 + len};
+}
+
+/* Lee un DICT (nAttrs + pares string/string). Devuelve {dict, next}. */
+function readDict(dv, offset){
+  const nAttrs = dv.getUint32(offset, true);
+  let o = offset + 4;
+  const dict = {};
+  for(let a=0;a<nAttrs;a++){
+    const k = readString(dv, o); o = k.next;
+    const v = readString(dv, o); o = v.next;
+    dict[k.str] = v.str;
+  }
+  return {dict, next: o};
+}
+
+function parseVox(arrayBuffer){
+  const dv = new DataView(arrayBuffer);
+  const tagAt = (off) => String.fromCharCode(dv.getUint8(off),dv.getUint8(off+1),dv.getUint8(off+2),dv.getUint8(off+3));
+
+  if (tagAt(0) !== "VOX ") throw new Error("no es un archivo .vox válido (falta magic 'VOX ')");
+  const version = dv.getUint32(4, true);
+  if (version !== 150 && version !== 200) throw new Error("versión de .vox no soportada: " + version);
+
+  const cMain = readChunkHeader(dv, 8);
+  if (cMain.tag !== "MAIN") throw new Error("chunk inicial inválido (se esperaba MAIN)");
+
+  const length = arrayBuffer.byteLength;
+
+  /* ── Pasada 1: contar chunks ── */
+  let nmodels=0, ntransforms=0, ngroups=0, nshapes=0, nlayers=0;
+  for(let off = cMain.offsetChildren; off < length; ){
+    const c = readChunkHeader(dv, off);
+    switch(c.tag){
+      case "SIZE": nmodels++; break;
+      case "nTRN": ntransforms++; break;
+      case "nGRP": ngroups++; break;
+      case "nSHP": nshapes++; break;
+      case "LAYR": nlayers++; break;
+    }
+    off = c.offsetEnd;
+  }
+
+  /* nindex = max_node_id + 1 entre nTRN/nGRP/nSHP */
+  let maxNodeId = 0, hasNodes = false;
+  for(let off = cMain.offsetChildren; off < length; ){
+    const c = readChunkHeader(dv, off);
+    if (c.tag === "nTRN" || c.tag === "nGRP" || c.tag === "nSHP"){
+      const id = dv.getUint32(c.offsetData, true);
+      if (!hasNodes || id > maxNodeId) maxNodeId = id;
+      hasNodes = true;
+    }
+    off = c.offsetEnd;
+  }
+  const nindex = hasNodes ? (maxNodeId + 1) : 0;
+
+  const nodesIndex = new Array(nindex).fill(null); // {type, index}
+  const transforms = new Array(ntransforms);
+  const groups = new Array(ngroups);
+  const shapes = new Array(nshapes);
+
+  /* ── Pasada 2: asignar ids -> índices ── */
+  {
+    let ti=0, gi=0, si=0;
+    for(let off = cMain.offsetChildren; off < length; ){
+      const c = readChunkHeader(dv, off);
+      if (c.tag === "nTRN"){
+        const id = dv.getUint32(c.offsetData, true);
+        nodesIndex[id] = {type: REF_TRANSFORM, index: ti++};
+      } else if (c.tag === "nGRP"){
+        const id = dv.getUint32(c.offsetData, true);
+        nodesIndex[id] = {type: REF_GROUP, index: gi++};
+      } else if (c.tag === "nSHP"){
+        const id = dv.getUint32(c.offsetData, true);
+        nodesIndex[id] = {type: REF_SHAPE, index: si++};
+      }
+      off = c.offsetEnd;
+    }
+  }
+
+  /* ── Pasada 3: lectura final ── */
+  const models = new Array(nmodels);
+  const layers = new Array(nlayers);
+  let palette = makeDefaultPalette();
+
+  let mi=0, li=0, ti=0, gi=0, si=0;
+  for(let off = cMain.offsetChildren; off < length; ){
+    const c = readChunkHeader(dv, off);
+    switch(c.tag){
+      case "SIZE": {
+        const sx = dv.getUint32(c.offsetData+0, true);
+        const sy = dv.getUint32(c.offsetData+4, true);
+        const sz = dv.getUint32(c.offsetData+8, true);
+        models[mi] = {size:{x:sx,y:sy,z:sz}, voxels:null};
+        break;
+      }
+      case "XYZI": {
+        const nvoxels = dv.getUint32(c.offsetData, true);
+        const voxels = new Uint8Array(nvoxels*4);
+        voxels.set(new Uint8Array(arrayBuffer, c.offsetData+4, nvoxels*4));
+        models[mi].voxels = voxels;
+        models[mi].nvoxels = nvoxels;
+        mi++;
+        break;
+      }
+      case "nTRN": {
+        const id = dv.getUint32(c.offsetData, true);
+        let o = c.offsetData + 4;
+        const d = readDict(dv, o); o = d.next;
+        const childId = dv.getUint32(o, true); o += 4;
+        o += 4; // reserved_id
+        const layerId = dv.getInt32(o, true); o += 4;
+        const childRef = (childId < nindex) ? nodesIndex[childId] : null;
+        let childType = null, childIndex = -1;
+        if (childRef){
+          if (childRef.type === REF_GROUP){ childType='group'; childIndex=childRef.index; }
+          else if (childRef.type === REF_SHAPE){ childType='shape'; childIndex=childRef.index; }
+        }
+        transforms[ti++] = {
+          id, name: d.dict["_name"] || null,
+          isHidden: d.dict["_hidden"] ? (parseInt(d.dict["_hidden"],10) !== 0) : false,
+          childType, childIndex,
+          layerIndex: (layerId === -1 || layerId === 0xFFFFFFFF) ? -1 : layerId,
+        };
+        break;
+      }
+      case "nGRP": {
+        const id = dv.getUint32(c.offsetData, true);
+        let o = c.offsetData + 4;
+        const d = readDict(dv, o); o = d.next;
+        const nchildren = dv.getUint32(o, true); o += 4;
+        const children = [];
+        for(let k=0;k<nchildren;k++){
+          const childId = dv.getUint32(o, true); o += 4;
+          if (childId < nindex && nodesIndex[childId] && nodesIndex[childId].type === REF_TRANSFORM)
+            children.push(nodesIndex[childId].index);
+          else
+            children.push(-1);
+        }
+        groups[gi++] = {id, children};
+        break;
+      }
+      case "nSHP": {
+        const id = dv.getUint32(c.offsetData, true);
+        let o = c.offsetData + 4;
+        const d = readDict(dv, o); o = d.next;
+        const nmodelsShape = dv.getUint32(o, true); o += 4;
+        const shapeModels = [];
+        for(let m=0;m<nmodelsShape;m++){
+          const modelId = dv.getUint32(o, true); o += 4;
+          const dm = readDict(dv, o); o = dm.next;
+          shapeModels.push({modelIndex: modelId});
+        }
+        shapes[si] = {id, models: shapeModels, __idx: si};
+        si++;
+        break;
+      }
+      case "LAYR": {
+        const id = dv.getUint32(c.offsetData, true);
+        let o = c.offsetData + 4;
+        const d = readDict(dv, o); o = d.next;
+        layers[id] = {
+          id,
+          name: d.dict["_name"] || null,
+          isHidden: d.dict["_hidden"] ? (parseInt(d.dict["_hidden"],10) !== 0) : false,
+        };
+        li++;
+        break;
+      }
+      case "RGBA": {
+        // Chunk data = 256 * (r,g,b,a). Los colores están corridos +1: entrada i -> índice de paleta i+1
+        for(let i=0;i<255;i++){
+          const base = c.offsetData + i*4;
+          palette[(i+1)*4+0] = dv.getUint8(base+0);
+          palette[(i+1)*4+1] = dv.getUint8(base+1);
+          palette[(i+1)*4+2] = dv.getUint8(base+2);
+          palette[(i+1)*4+3] = dv.getUint8(base+3);
+        }
+        break;
+      }
+      default: break;
+    }
+    off = c.offsetEnd;
+  }
+
+  return {
+    nmodels, models,
+    nlayers, layers,
+    nodes: { nindex, index: nodesIndex, transforms, groups, shapes },
+    noNodesInFile: (nindex === 0),
+    palette,
+  };
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Recorrido del árbol de escena (equivalente a tcvox_scene_iter_shapes)
+ * Devuelve la lista de shapes visibles en orden DFS (o todos si includeHidden)
+ * ════════════════════════════════════════════════════════════════ */
+function iterShapesList(scene, includeHidden){
+  const out = [];
+  const nodes = scene.nodes;
+  if (nodes.shapes.length === 0) return out;
+
+  function isTransformHidden(tr){
+    if (includeHidden) return false;
+    if (tr.isHidden) return true;
+    if (tr.layerIndex >= 0 && scene.layers[tr.layerIndex] && scene.layers[tr.layerIndex].isHidden) return true;
+    return false;
+  }
+  function walkTransform(tr){
+    if (isTransformHidden(tr)) return;
+    if (tr.childType === 'group') walkGroup(nodes.groups[tr.childIndex]);
+    else if (tr.childType === 'shape') out.push(nodes.shapes[tr.childIndex]);
+  }
+  function walkGroup(group){
+    if (!group) return;
+    for(const trIdx of group.children){
+      if (trIdx < 0) continue;
+      walkTransform(nodes.transforms[trIdx]);
+    }
+  }
+
+  const ref = nodes.index[0];
+  if (!ref) return out;
+  if (ref.type === REF_GROUP) walkGroup(nodes.groups[ref.index]);
+  else if (ref.type === REF_TRANSFORM) walkTransform(nodes.transforms[ref.index]);
+  else if (ref.type === REF_SHAPE) out.push(nodes.shapes[ref.index]);
+
+  return out;
+}
+
+/* Busca el nTRN padre de un shape para obtener su nombre */
+function shapeBaseName(scene, shp, fileBase, shapeIdx){
+  for(const tr of scene.nodes.transforms){
+    if (tr.childType === 'shape' && tr.childIndex === shp.__idx){
+      if (tr.name) return fileBase + "_" + tr.name;
+      return fileBase + "_obj" + String(shapeIdx).padStart(3,'0');
+    }
+  }
+  return fileBase + "_obj" + String(shapeIdx).padStart(3,'0');
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Estado global de empaquetado (equivalente a las globales del .c)
+ * ════════════════════════════════════════════════════════════════ */
+const FINE = 8;
+let g_atlas_w = 1024;
+let g_trim_xy = false;
+let g_unique_tiles = [];   // {data(Uint8ClampedArray rgba), tw, th, crc, atlasIdx}
+let g_occ = null;          // Uint8Array, crece dinámicamente
+let g_occ_cols = 0;
+let g_occ_rows_alloc = 0;
+let g_rows_used = 0;
+
+function occInit(width){
+  g_atlas_w = width;
+  g_occ_cols = width / FINE;
+  g_occ_rows_alloc = 256;
+  g_rows_used = 0;
+  g_occ = new Uint8Array(g_occ_rows_alloc * g_occ_cols);
+}
+function occGrow(minRows){
+  if (minRows <= g_occ_rows_alloc) return;
+  let newRows = g_occ_rows_alloc;
+  while (newRows < minRows) newRows *= 2;
+  const na = new Uint8Array(newRows * g_occ_cols);
+  na.set(g_occ);
+  g_occ = na;
+  g_occ_rows_alloc = newRows;
+}
+function isFree(slot, tw, th){
+  const tpr = Math.floor(g_atlas_w / tw); // división entera, igual que el 'int tpr' del C original
+  const cw = tw / FINE, ch = th / FINE;
+  const r0 = Math.floor(slot / tpr) * ch, c0 = (slot % tpr) * cw;
+  occGrow(r0 + ch);
+  for(let r=r0; r<r0+ch; r++)
+    for(let c=c0; c<c0+cw; c++)
+      if (g_occ[r*g_occ_cols + c]) return false;
+  return true;
+}
+function markSlot(slot, tw, th){
+  const tpr = Math.floor(g_atlas_w / tw);
+  const cw = tw / FINE, ch = th / FINE;
+  const r0 = Math.floor(slot / tpr) * ch, c0 = (slot % tpr) * cw;
+  for(let r=r0; r<r0+ch; r++){
+    for(let c=c0; c<c0+cw; c++) g_occ[r*g_occ_cols + c] = 1;
+    if (r+1 > g_rows_used) g_rows_used = r+1;
+  }
+}
+function findSlot(tw, th){
+  const tpr = Math.floor(g_atlas_w / tw);
+  for(let idx=0; ; idx++){
+    if (isFree(idx, tw, th)) return idx;
+    if (idx > tpr * 1e6) throw new Error("no se encontró lugar en el atlas (bucle de seguridad)");
+  }
+}
+
+function findOrAddTile(data, tw, th){
+  const crc = crc32(data);
+  for(let i=0;i<g_unique_tiles.length;i++){
+    const ut = g_unique_tiles[i];
+    if (ut.crc === crc && ut.tw === tw && ut.th === th){
+      let same = true;
+      for(let k=0;k<data.length;k++) if (ut.data[k] !== data[k]) { same = false; break; }
+      if (same) return i;
+    }
+  }
+  g_unique_tiles.push({data, tw, th, crc, atlasIdx: -1});
+  return g_unique_tiles.length - 1;
+}
+
+function packUniqueTiles(){
+  const order = g_unique_tiles.map((_,i)=>i);
+  order.sort((a,b) => (g_unique_tiles[b].tw*g_unique_tiles[b].th) - (g_unique_tiles[a].tw*g_unique_tiles[a].th));
+  for(const idx of order){
+    const ut = g_unique_tiles[idx];
+    const slot = findSlot(ut.tw, ut.th);
+    markSlot(slot, ut.tw, ut.th);
+    ut.atlasIdx = slot;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * render_model: modelo .vox -> stacked sprite (un tile por capa Z)
+ * ════════════════════════════════════════════════════════════════ */
+function abgrPaletteColor(palette, index){
+  return [palette[index*4], palette[index*4+1], palette[index*4+2], palette[index*4+3]];
+}
+
+function renderModel(model, palette, spriteName, log){
+  if (!model || !model.voxels || model.nvoxels === 0) return null;
+
+  let xmin, xmax, ymin, ymax, zmin = model.size.z, zmax = -1;
+  const nv = model.nvoxels;
+  const vox = model.voxels; // Uint8Array [x,y,z,idx] * nv
+
+  if (g_trim_xy){
+    xmin = model.size.x; xmax = -1;
+    ymin = model.size.y; ymax = -1;
+    for(let i=0;i<nv;i++){
+      const vx=vox[i*4], vy=vox[i*4+1], vz=vox[i*4+2];
+      if (vx<xmin) xmin=vx; if (vx>xmax) xmax=vx;
+      if (vy<ymin) ymin=vy; if (vy>ymax) ymax=vy;
+      if (vz<zmin) zmin=vz; if (vz>zmax) zmax=vz;
+    }
+    if (xmax < 0) return null;
+  } else {
+    xmin = 0; xmax = model.size.x - 1;
+    ymin = 0; ymax = model.size.y - 1;
+    for(let i=0;i<nv;i++){
+      const vz=vox[i*4+2];
+      if (vz<zmin) zmin=vz; if (vz>zmax) zmax=vz;
+    }
+    if (zmax < 0) return null;
+  }
+
+  const sw = xmax - xmin + 1, sh = ymax - ymin + 1, nf = zmax - zmin + 1;
+  if (sw > 256 || sh > 256){
+    log(`    SKIP ${spriteName}  slice >256px (${sw}x${sh})`);
+    return null;
+  }
+  const tw = Math.ceil(sw/FINE)*FINE, th = Math.ceil(sh/FINE)*FINE;
+  const tprCheck = Math.floor(g_atlas_w / tw);
+  if (tprCheck > 256 || tprCheck < 1){
+    log(`    SKIP ${spriteName}  tile=${tw}x${th} -> ${tprCheck} col (0 o >256)`);
+    return null;
+  }
+
+  const ox = Math.floor((tw-sw)/2), oy = Math.floor((th-sh)/2);
+  const sp = { name: spriteName, sw, sh, nf, tw, th, offset:0, tileIds:new Array(nf), indices:new Uint16Array(nf) };
+
+  for(let f=0; f<nf; f++){
+    const capaZ = zmax - f; // frame 0 = capa superior
+    const tile = new Uint8ClampedArray(tw*th*4);
+    for(let i=0;i<nv;i++){
+      if (vox[i*4+2] !== capaZ) continue;
+      const rx = vox[i*4] - xmin;
+      const ry = ymax - vox[i*4+1]; // Y invertido
+      const rgba = abgrPaletteColor(palette, vox[i*4+3]);
+      const px = ((oy+ry)*tw + (ox+rx))*4;
+      tile[px]=rgba[0]; tile[px+1]=rgba[1]; tile[px+2]=rgba[2]; tile[px+3]=rgba[3];
+    }
+    sp.tileIds[f] = findOrAddTile(tile, tw, th);
+  }
+
+  log(`    ${spriteName}  slice=${sw}x${sh}  z=${nf}  tile=${tw}x${th}`);
+  return sp;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * process_vox: procesa un archivo .vox completo -> lista de sprites
+ * ════════════════════════════════════════════════════════════════ */
+function processVox(scene, baseName, log){
+  const sprites = [];
+  if (scene.nmodels === 0){
+    log(`  SKIP ${baseName}: sin modelos`);
+    return sprites;
+  }
+
+  if (scene.noNodesInFile){
+    log(`  ${baseName}  (${scene.nmodels} modelo(s))`);
+    for(let mi=0; mi<scene.nmodels; mi++){
+      const sname = `${baseName}_${String(mi).padStart(3,'0')}`;
+      const sp = renderModel(scene.models[mi], scene.palette, sname, log);
+      if (sp) sprites.push(sp);
+    }
+    return sprites;
+  }
+
+  const shapeList = iterShapesList(scene, false);
+  log(`  ${baseName}  (${scene.nmodels} modelo(s), ${shapeList.length} shape(s))`);
+
+  let shapeIdx = 0;
+  for(const shp of shapeList){
+    const baseSname = shapeBaseName(scene, shp, baseName, shapeIdx);
+    if (shp.models.length === 1){
+      const model = scene.models[shp.models[0].modelIndex];
+      const sp = renderModel(model, scene.palette, baseSname, log);
+      if (sp) sprites.push(sp);
+    } else {
+      for(let fm=0; fm<shp.models.length; fm++){
+        const sname = `${baseSname}_f${String(fm).padStart(3,'0')}`;
+        const model = scene.models[shp.models[fm].modelIndex];
+        const sp = renderModel(model, scene.palette, sname, log);
+        if (sp) sprites.push(sp);
+      }
+    }
+    shapeIdx++;
+  }
+  return sprites;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Escritura de salidas: PNG (canvas), SSA (binario), MAP y TXT (texto)
+ * ════════════════════════════════════════════════════════════════ */
+function buildAtlasCanvas(){
+  const atlasH = g_rows_used * FINE;
+  if (atlasH === 0) throw new Error("atlas vacío: no se generó ningún sprite");
+  const canvas = document.createElement('canvas');
+  canvas.width = g_atlas_w; canvas.height = atlasH;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(g_atlas_w, atlasH);
+  const dst = img.data;
+
+  for(const ut of g_unique_tiles){
+    if (ut.atlasIdx < 0) continue;
+    const tw = ut.tw, th = ut.th;
+    const tpr = Math.floor(g_atlas_w / tw);
+    const tx = ut.atlasIdx % tpr, ty = Math.floor(ut.atlasIdx / tpr);
+    for(let y=0;y<th;y++){
+      const srcOff = y*tw*4;
+      const dstOff = ((ty*th+y)*g_atlas_w + tx*tw)*4;
+      dst.set(ut.data.subarray(srcOff, srcOff+tw*4), dstOff);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return {canvas, atlasH};
+}
+
+function buildSSA(sprites){
+  let totalFrames = 0;
+  for(const sp of sprites){ sp.offset = totalFrames; totalFrames += sp.nf; }
+
+  const headerBytes = 6 + sprites.length*8;
+  const buf = new ArrayBuffer(headerBytes + totalFrames*2);
+  const dv = new DataView(buf);
+  let o = 0;
+  dv.setUint16(o, 0x5353, true); o+=2; // "SS"
+  dv.setUint16(o, 0x4100, true); o+=2; // "A\0"
+  dv.setUint16(o, sprites.length, true); o+=2;
+
+  for(const sp of sprites){
+    dv.setUint16(o, sp.th, true); o+=2;      // tile_wh (sólo th, igual que el original)
+    dv.setUint16(o, sp.tw, true); o+=2;      // slice_wh (sólo tw)
+    dv.setUint16(o, sp.offset, true); o+=2;
+    dv.setUint16(o, sp.nf, true); o+=2;
+  }
+  for(const sp of sprites){
+    const tpr = Math.floor(g_atlas_w / sp.tw);
+    for(let f=0; f<sp.nf; f++){
+      const idx = sp.indices[f];
+      const packed = (idx % tpr) | ((Math.floor(idx / tpr)) << 8);
+      dv.setUint16(o, packed, true); o+=2;
+    }
+  }
+  return {buf, totalFrames};
+}
+
+function buildMap(sprites){
+  let out = `# ${sprites.length} sprites\n`;
+  out += "# idx  name                                          tile     slice    z-frames  offset\n";
+  sprites.forEach((sp,i) => {
+    out += `[${String(i).padStart(3,' ')}]  ${sp.name.padEnd(44,' ')}  ${String(sp.tw).padStart(3)}x${String(sp.th).padEnd(3)}  ${String(sp.sw).padStart(3)}x${String(sp.sh).padEnd(3)}  ${String(sp.nf).padStart(5)}  ${sp.offset}\n`;
+  });
+  return out;
+}
+function buildTxt(sprites){
+  return sprites.map(sp => sp.name).join("\n") + "\n";
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * Empaquetador ZIP mínimo (método "store", sin compresión)
+ * ════════════════════════════════════════════════════════════════ */
+function crc32Buf(u8){ return crc32(u8); }
+
+function makeZip(files){ // files: [{name, data: Uint8Array}]
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+  const enc = new TextEncoder();
+
+  for(const f of files){
+    const nameBytes = enc.encode(f.name);
+    const crc = crc32Buf(f.data);
+    const size = f.data.length;
+
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true);
+    lh.setUint16(4, 20, true);
+    lh.setUint16(6, 0, true);
+    lh.setUint16(8, 0, true);       // sin compresión
+    lh.setUint16(10, 0, true);
+    lh.setUint16(12, 0, true);
+    lh.setUint32(14, crc, true);
+    lh.setUint32(18, size, true);
+    lh.setUint32(22, size, true);
+    lh.setUint16(26, nameBytes.length, true);
+    lh.setUint16(28, 0, true);
+
+    localParts.push(new Uint8Array(lh.buffer), nameBytes, f.data);
+
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true);
+    ch.setUint16(4, 20, true);
+    ch.setUint16(6, 20, true);
+    ch.setUint16(8, 0, true);
+    ch.setUint16(10, 0, true);
+    ch.setUint16(12, 0, true);
+    ch.setUint16(14, 0, true);
+    ch.setUint32(16, crc, true);
+    ch.setUint32(20, size, true);
+    ch.setUint32(24, size, true);
+    ch.setUint16(28, nameBytes.length, true);
+    ch.setUint16(30, 0, true);
+    ch.setUint16(32, 0, true);
+    ch.setUint16(34, 0, true);
+    ch.setUint16(36, 0, true);
+    ch.setUint32(38, 0, true);
+    ch.setUint32(42, offset, true);
+
+    centralParts.push(new Uint8Array(ch.buffer), nameBytes);
+
+    offset += 30 + nameBytes.length + size;
+  }
+
+  const centralOffset = offset;
+  let centralSize = 0;
+  for(let i=0;i<centralParts.length;i+=2) centralSize += centralParts[i].length + centralParts[i+1].length;
+
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true);
+  eocd.setUint16(4, 0, true);
+  eocd.setUint16(6, 0, true);
+  eocd.setUint16(8, files.length, true);
+  eocd.setUint16(10, files.length, true);
+  eocd.setUint32(12, centralSize, true);
+  eocd.setUint32(16, centralOffset, true);
+  eocd.setUint16(20, 0, true);
+
+  const all = [...localParts, ...centralParts, new Uint8Array(eocd.buffer)];
+  const totalLen = all.reduce((a,b)=>a+b.length, 0);
+  const out = new Uint8Array(totalLen);
+  let p = 0;
+  for(const part of all){ out.set(part, p); p += part.length; }
+  return out;
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * UI
+ * ════════════════════════════════════════════════════════════════ */
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const fileListEl = document.getElementById('fileList');
+const runBtn = document.getElementById('runBtn');
+const logEl = document.getElementById('log');
+const resultsPanel = document.getElementById('resultsPanel');
+const atlasPreview = document.getElementById('atlasPreview');
+const atlasStat = document.getElementById('atlasStat');
+const downloadsEl = document.getElementById('downloads');
+
+let selectedFiles = []; // File objects
+
+function refreshFileList(){
+  fileListEl.innerHTML = '';
+  selectedFiles.forEach((f, i) => {
+    const li = document.createElement('li');
+    const span = document.createElement('span');
+    span.textContent = f.name;
+    const rm = document.createElement('span');
+    rm.textContent = '✕'; rm.className = 'rm';
+    rm.onclick = () => { selectedFiles.splice(i,1); refreshFileList(); };
+    li.appendChild(span); li.appendChild(rm);
+    fileListEl.appendChild(li);
+  });
+  runBtn.disabled = selectedFiles.length === 0;
+}
+
+function addFiles(fileListLike){
+  for(const f of fileListLike){
+    if (f.name.toLowerCase().endsWith('.vox')) selectedFiles.push(f);
+  }
+  refreshFileList();
+}
+
+dropzone.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', (e) => { addFiles(e.target.files); fileInput.value=''; });
+['dragenter','dragover'].forEach(evt => dropzone.addEventListener(evt, e => {
+  e.preventDefault(); dropzone.classList.add('drag');
+}));
+['dragleave','drop'].forEach(evt => dropzone.addEventListener(evt, e => {
+  e.preventDefault(); dropzone.classList.remove('drag');
+}));
+dropzone.addEventListener('drop', e => { addFiles(e.dataTransfer.files); });
+
+runBtn.disabled = true;
+
+function log(msg){
+  logEl.textContent += (logEl.textContent.endsWith('Esperando archivos…') ? '' : '') + msg + "\n";
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function resetLog(){ logEl.textContent = ''; }
+
+runBtn.addEventListener('click', async () => {
+  resultsPanel.classList.add('hidden');
+  resetLog();
+  runBtn.disabled = true;
+
+  try {
+    const atlasWidth = parseInt(document.getElementById('atlasWidth').value, 10);
+    g_trim_xy = document.getElementById('trimXY').checked;
+    const outName = (document.getElementById('outName').value || 'sprites').trim();
+
+    g_unique_tiles = [];
+    occInit(atlasWidth);
+
+    log(`vox2ssa`);
+    log(`  Archivos : ${selectedFiles.length}`);
+    log(`  Atlas    : ${atlasWidth} px de ancho`);
+    log(`  Recorte XY: ${g_trim_xy ? 'sí (trim)' : 'no (volumen completo)'}`);
+    log('');
+
+    let allSprites = [];
+    for(const file of selectedFiles){
+      const baseName = file.name.replace(/\.vox$/i, '');
+      let scene;
+      try {
+        const buf = await file.arrayBuffer();
+        scene = parseVox(buf);
+      } catch(err){
+        log(`  WARN: omitiendo ${file.name} — ${err.message}`);
+        continue;
+      }
+      const sprites = processVox(scene, baseName, log);
+      allSprites = allSprites.concat(sprites);
+    }
+
+    if (allSprites.length === 0){
+      log('\nNo se generó ningún sprite.');
+      return;
+    }
+
+    log(`\nEmpaquetando ${g_unique_tiles.length} tiles únicos...`);
+    packUniqueTiles();
+
+    for(const sp of allSprites)
+      for(let f=0; f<sp.nf; f++)
+        sp.indices[f] = g_unique_tiles[sp.tileIds[f]].atlasIdx;
+
+    allSprites.sort((a,b) => a.name < b.name ? -1 : (a.name > b.name ? 1 : 0));
+
+    log(`\nAtlas: ${allSprites.length} sprites  ${g_unique_tiles.length} tiles únicos\n`);
+
+    const {canvas, atlasH} = buildAtlasCanvas();
+    const pngBlob = await new Promise(res => canvas.toBlob(res, 'image/png'));
+    const pngBytes = new Uint8Array(await pngBlob.arrayBuffer());
+
+    const {buf: ssaBuf, totalFrames} = buildSSA(allSprites);
+    const ssaBytes = new Uint8Array(ssaBuf);
+
+    const mapText = buildMap(allSprites);
+    const txtText = buildTxt(allSprites);
+    const enc = new TextEncoder();
+
+    log(`  ${outName}.png  (${g_atlas_w}x${atlasH})`);
+    log(`  ${outName}.ssa  (${allSprites.length} sprites, ${totalFrames} frames, ${ssaBytes.length} bytes)`);
+    log(`  ${outName}.map`);
+    log(`  ${outName}.txt`);
+    log(`\nListo.`);
+
+    // Preview
+    atlasPreview.src = URL.createObjectURL(pngBlob);
+    atlasStat.textContent = `${g_atlas_w}×${atlasH}px — ${allSprites.length} sprites — ${g_unique_tiles.length} tiles únicos`;
+
+    // Downloads
+    downloadsEl.innerHTML = '';
+    const files = [
+      {name: `${outName}.png`, data: pngBytes},
+      {name: `${outName}.ssa`, data: ssaBytes},
+      {name: `${outName}.map`, data: enc.encode(mapText)},
+      {name: `${outName}.txt`, data: enc.encode(txtText)},
+    ];
+    for(const f of files){
+      const blob = new Blob([f.data]);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = f.name;
+      a.textContent = `⬇ ${f.name}  (${f.data.length.toLocaleString('es')} bytes)`;
+      downloadsEl.appendChild(a);
+    }
+    const zipBytes = makeZip(files);
+    const zipBlob = new Blob([zipBytes], {type:'application/zip'});
+    const zipA = document.createElement('a');
+    zipA.href = URL.createObjectURL(zipBlob);
+    zipA.download = `${outName}.zip`;
+    zipA.textContent = `⬇ ${outName}.zip (todo junto)`;
+    zipA.style.borderColor = 'var(--accent2)';
+    downloadsEl.insertBefore(zipA, downloadsEl.firstChild);
+
+    resultsPanel.classList.remove('hidden');
+
+  } catch(err){
+    log(`\nERROR: ${err.message}`);
+    console.error(err);
+  } finally {
+    runBtn.disabled = selectedFiles.length === 0;
+  }
+});
+</script>
+</body>
+</html>

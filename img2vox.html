@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>img2vox</title>
+<style>
+  :root{
+    --bg:#0b0f0c;
+    --panel:#10160f;
+    --line:#233326;
+    --fg:#c9f2c0;
+    --dim:#5f8a63;
+    --accent:#7ee787;
+    --amber:#e0a35c;
+    --err:#e07070;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--fg);
+    font-family:'Courier New', ui-monospace, Consolas, monospace;
+    display:flex;
+    justify-content:center;
+    padding:32px 16px;
+  }
+  main{
+    width:100%;
+    max-width:640px;
+  }
+  h1{
+    font-size:15px;
+    letter-spacing:.15em;
+    text-transform:uppercase;
+    color:var(--accent);
+    margin:0 0 4px;
+  }
+  .sub{
+    color:var(--dim);
+    font-size:12px;
+    margin-bottom:24px;
+  }
+  .panel{
+    border:1px solid var(--line);
+    background:var(--panel);
+    padding:18px;
+    margin-bottom:16px;
+  }
+  .row{
+    display:flex;
+    gap:14px;
+    margin-bottom:14px;
+    flex-wrap:wrap;
+  }
+  .field{
+    flex:1;
+    min-width:120px;
+  }
+  label{
+    display:block;
+    font-size:11px;
+    color:var(--dim);
+    text-transform:uppercase;
+    letter-spacing:.08em;
+    margin-bottom:5px;
+  }
+  input[type=number]{
+    width:100%;
+    background:#0a0f09;
+    border:1px solid var(--line);
+    color:var(--fg);
+    padding:7px 8px;
+    font-family:inherit;
+    font-size:13px;
+  }
+  input[type=file]{
+    width:100%;
+    color:var(--dim);
+    font-size:12px;
+    font-family:inherit;
+  }
+  .check{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-size:12px;
+    color:var(--fg);
+  }
+  .check input{accent-color:var(--accent);}
+  button{
+    width:100%;
+    background:var(--accent);
+    color:#04170a;
+    border:none;
+    padding:11px;
+    font-family:inherit;
+    font-weight:bold;
+    letter-spacing:.08em;
+    text-transform:uppercase;
+    font-size:12px;
+    cursor:pointer;
+  }
+  button:disabled{
+    background:var(--line);
+    color:var(--dim);
+    cursor:not-allowed;
+  }
+  #drop{
+    border:1px dashed var(--line);
+    padding:16px;
+    text-align:center;
+    font-size:12px;
+    color:var(--dim);
+    cursor:pointer;
+  }
+  #drop.over{border-color:var(--accent); color:var(--accent);}
+  #preview{
+    display:none;
+    max-width:100%;
+    image-rendering:pixelated;
+    border:1px solid var(--line);
+    margin-top:12px;
+  }
+  #log{
+    white-space:pre-wrap;
+    font-size:12px;
+    line-height:1.5;
+    color:var(--dim);
+    min-height:20px;
+  }
+  #log .ok{color:var(--fg);}
+  #log .hi{color:var(--accent);}
+  #log .err{color:var(--err);}
+  #dl{
+    display:none;
+    margin-top:12px;
+    text-align:center;
+    text-decoration:none;
+    background:var(--amber);
+    color:#231400;
+  }
+  footer{
+    color:var(--line);
+    font-size:11px;
+    text-align:center;
+    margin-top:24px;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>img2vox</h1>
+  <div class="sub">imagen &rarr; archivo .vox multi-modelo (un modelo por tile)</div>
+
+  <div class="panel">
+    <div class="row">
+      <div class="field" style="flex:2;">
+        <label>Imagen</label>
+        <div id="drop">arrastrá una imagen o hacé click</div>
+        <input type="file" id="file" accept="image/*" style="display:none;">
+        <img id="preview">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Tile ancho (px)</label>
+        <input type="number" id="tileW" value="8" min="1" max="256">
+      </div>
+      <div class="field">
+        <label>Tile alto (px)</label>
+        <input type="number" id="tileH" value="8" min="1" max="256">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="check">
+        <input type="checkbox" id="useColor" checked>
+        <label for="useColor" style="margin:0; text-transform:none; color:var(--fg); font-size:12px;">
+          usar color real (sin marcar: todos los voxeles blancos)
+        </label>
+      </div>
+    </div>
+
+    <button id="run" disabled>Generar .vox</button>
+    <a id="dl" download="salida.vox">descargar .vox</a>
+  </div>
+
+  <div class="panel">
+    <div id="log">esperando imagen&hellip;</div>
+  </div>
+
+  <footer>
+    transparencia: alpha=0 no genera voxel &middot; sin alpha, el pixel (0,0) es el color transparente<br>
+    paleta: cuantizada a 4 bits por canal, máx. 255 colores (+ el más cercano si se llena)
+  </footer>
+</main>
+
+<script>
+/* ---------------------------------------------------------------
+ * img2vox — puerto directo de img2vox.c a JS.
+ * Un tile de la imagen == un modelo (SIZE+XYZI) dentro del .vox.
+ * ------------------------------------------------------------- */
+
+const fileInput = document.getElementById('file');
+const drop       = document.getElementById('drop');
+const preview    = document.getElementById('preview');
+const runBtn     = document.getElementById('run');
+const dlLink     = document.getElementById('dl');
+const logEl      = document.getElementById('log');
+
+let img = null; // HTMLImageElement cargada
+
+function log(lines) {
+  logEl.innerHTML = lines.join('\n');
+}
+
+drop.addEventListener('click', () => fileInput.click());
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) loadFile(fileInput.files[0]);
+});
+
+function loadFile(file) {
+  const url = URL.createObjectURL(file);
+  const im = new Image();
+  im.onload = () => {
+    img = im;
+    preview.src = url;
+    preview.style.display = 'block';
+    runBtn.disabled = false;
+    log([`<span class="ok">Imagen: ${file.name} (${im.width}x${im.height})</span>`]);
+    dlLink.style.display = 'none';
+  };
+  im.onerror = () => log(['<span class="err">ERROR: no se pudo cargar la imagen</span>']);
+  im.src = url;
+}
+
+runBtn.addEventListener('click', () => {
+  try {
+    generar();
+  } catch (e) {
+    log([`<span class="err">ERROR: ${e.message}</span>`]);
+  }
+});
+
+/* ===== buffer dinámico de bytes ===== */
+class Buf {
+  constructor() { this.a = []; }
+  u32(v) {
+    this.a.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
+  }
+  str(s) { for (let i = 0; i < s.length; i++) this.a.push(s.charCodeAt(i)); }
+  bytes(arr) { for (let i = 0; i < arr.length; i++) this.a.push(arr[i]); }
+  toUint8Array() { return new Uint8Array(this.a); }
+}
+
+function writeChunk(out, id, contentBytes) {
+  out.str(id);
+  out.u32(contentBytes.length);
+  out.u32(0);
+  out.bytes(contentBytes);
+}
+
+/* ===== paleta (igual a img2vox.c) ===== */
+function quant4(c) {
+  const hi = c >> 4;
+  return (hi << 4) | hi;
+}
+
+function makePalette() {
+  const pal = [{ r: 0, g: 0, b: 0 }]; // indice 0 sin usar (placeholder)
+  return {
+    pal,
+    get(r, g, b) {
+      r = quant4(r); g = quant4(g); b = quant4(b);
+      for (let i = 1; i < pal.length; i++) {
+        const p = pal[i];
+        if (p.r === r && p.g === g && p.b === b) return i;
+      }
+      if (pal.length < 256) {
+        pal.push({ r, g, b });
+        return pal.length - 1;
+      }
+      // paleta llena: color cuantizado mas cercano
+      let best = 1, bestD = Infinity;
+      for (let i = 1; i < 256; i++) {
+        const p = pal[i];
+        const dr = r - p.r, dg = g - p.g, db = b - p.b;
+        const d = dr * dr + dg * dg + db * db;
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      return best;
+    }
+  };
+}
+
+function generar() {
+  const tileW = parseInt(document.getElementById('tileW').value, 10);
+  const tileH = parseInt(document.getElementById('tileH').value, 10);
+  const useColor = document.getElementById('useColor').checked;
+
+  if (!img) throw new Error('no hay imagen cargada');
+  if (!(tileW > 0 && tileW <= 256 && tileH > 0 && tileH <= 256))
+    throw new Error(`tile invalido (${tileW}x${tileH})`);
+
+  const imgW = img.naturalWidth, imgH = img.naturalHeight;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = imgW; canvas.height = imgH;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(img, 0, 0);
+  const data = ctx.getImageData(0, 0, imgW, imgH).data; // Uint8ClampedArray RGBA
+
+  // detectar si hay canal alpha "real" (algun pixel con alpha != 255)
+  let hasRealAlpha = false;
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] !== 255) { hasRealAlpha = true; break; }
+  }
+
+  let transR = 0, transG = 0, transB = 0;
+  const lines = [];
+  if (!hasRealAlpha) {
+    transR = quant4(data[0]); transG = quant4(data[1]); transB = quant4(data[2]);
+    lines.push(`Sin canal alpha: transparente = RGB(${data[0]},${data[1]},${data[2]}) &rarr; cuantizado RGB(${transR},${transG},${transB})`);
+  }
+
+  const tilesX = Math.floor(imgW / tileW);
+  const tilesY = Math.floor(imgH / tileH);
+  const nTiles = tilesX * tilesY;
+  if (nTiles === 0) throw new Error(`imagen ${imgW}x${imgH} mas chica que tile ${tileW}x${tileH}`);
+
+  lines.push(`Imagen : ${imgW}x${imgH}`);
+  lines.push(`Tile   : ${tileW}x${tileH} px`);
+  lines.push(`Tiles  : ${tilesX}x${tilesY} = ${nTiles} modelos`);
+  lines.push(`Modo   : ${useColor ? 'color' : 'blanco'}`);
+
+  const palette = makePalette();
+  if (!useColor) palette.get(255, 255, 255); // indice 1 = blanco
+
+  const mainBody = new Buf();
+  let totalVox = 0, emptyTiles = 0;
+
+  for (let ty = 0; ty < tilesY; ty++) {
+    for (let tx = 0; tx < tilesX; tx++) {
+      // SIZE
+      const sizeBuf = new Buf();
+      sizeBuf.u32(tileW); sizeBuf.u32(tileH); sizeBuf.u32(1);
+      writeChunk(mainBody, 'SIZE', sizeBuf.a);
+
+      // XYZI  (X=columna, Y=fila invertida, Z=0)
+      const voxels = [];
+      for (let py = 0; py < tileH; py++) {
+        for (let px = 0; px < tileW; px++) {
+          const ix = tx * tileW + px;
+          const iy = ty * tileH + py;
+          const off = (iy * imgW + ix) * 4;
+          const r = data[off], g = data[off + 1], b = data[off + 2], a = data[off + 3];
+
+          if (hasRealAlpha) {
+            if (a === 0) continue;
+          } else {
+            const qr = quant4(r), qg = quant4(g), qb = quant4(b);
+            if (qr === transR && qg === transG && qb === transB) continue;
+          }
+
+          const cidx = useColor ? palette.get(r, g, b) : 1;
+          voxels.push(px, tileH - 1 - py, 0, cidx);
+        }
+      }
+
+      if (voxels.length === 0) emptyTiles++;
+      totalVox += voxels.length / 4;
+
+      const xyziBuf = new Buf();
+      xyziBuf.u32(voxels.length / 4);
+      xyziBuf.bytes(voxels);
+      writeChunk(mainBody, 'XYZI', xyziBuf.a);
+    }
+  }
+
+  lines.push(`Paleta : ${palette.pal.length - 1} color(es) usados`);
+
+  // chunk RGBA: 256 entradas x4, indice voxel i -> posicion (i-1)
+  const rgba = new Array(256 * 4).fill(0);
+  for (let i = 1; i < palette.pal.length; i++) {
+    const p = palette.pal[i];
+    const pos = (i - 1) * 4;
+    rgba[pos] = p.r; rgba[pos + 1] = p.g; rgba[pos + 2] = p.b; rgba[pos + 3] = 255;
+  }
+  writeChunk(mainBody, 'RGBA', rgba);
+
+  // ensamblar
+  const out = new Buf();
+  out.str('VOX '); out.u32(150);
+  out.str('MAIN'); out.u32(0); out.u32(mainBody.a.length);
+  out.bytes(mainBody.a);
+
+  const bytes = out.toUint8Array();
+  lines.push(`Modelos : ${nTiles} (${emptyTiles} vacios)`);
+  lines.push(`Voxeles : ${totalVox} totales`);
+  lines.push(`<span class="hi">Archivo : ${(bytes.length / 1024).toFixed(1)} KB</span>`);
+  lines.push('<span class="ok">Listo.</span>');
+  log(lines);
+
+  const blob = new Blob([bytes], { type: 'application/octet-stream' });
+  const url = URL.createObjectURL(blob);
+  dlLink.href = url;
+  dlLink.style.display = 'block';
+  dlLink.click();
+}
+</script>
+</body>
+</html>

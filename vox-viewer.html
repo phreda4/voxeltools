@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>vox viewer — instanced</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d10;overflow:hidden;font-family:ui-monospace,Menlo,Consolas,monospace;color:#c9d1d9;}
+  #canvas-wrap{position:fixed;inset:0;}
+  #panel{position:fixed;top:12px;left:12px;background:rgba(15,17,20,.85);border:1px solid #262b31;border-radius:6px;padding:10px 12px;font-size:12px;line-height:1.5;min-width:220px;backdrop-filter:blur(4px);}
+  #panel h1{font-size:12px;margin:0 0 8px;color:#7ee787;font-weight:600;letter-spacing:.03em;text-transform:uppercase;}
+  #drop{border:1px dashed #3a4048;border-radius:4px;padding:10px;text-align:center;cursor:pointer;color:#8b949e;margin-bottom:8px;transition:.15s;}
+  #drop.hover{border-color:#7ee787;color:#7ee787;background:rgba(126,231,135,.06);}
+  #stats{white-space:pre;color:#8b949e;}
+  #stats b{color:#c9d1d9;}
+  select,input[type=range]{width:100%;background:#161a1e;color:#c9d1d9;border:1px solid #262b31;border-radius:3px;padding:3px;margin-top:4px;}
+  #err{color:#f85149;margin-top:6px;display:none;}
+  #hint{position:fixed;bottom:10px;left:12px;font-size:11px;color:#4d545c;}
+</style>
+</head>
+<body>
+<div id="canvas-wrap"></div>
+<div id="panel">
+  <h1>vox instanced viewer</h1>
+  <div id="drop">arrastrá un .vox acá<br>o click para elegir</div>
+  <input id="file" type="file" accept=".vox" style="display:none">
+  <div id="modelrow" style="display:none">
+    modelo:
+    <select id="modelSel"></select>
+  </div>
+  <div id="stats">sin archivo cargado</div>
+  <div id="err"></div>
+</div>
+<div id="hint">drag: orbitar · rueda: zoom</div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+// ---------- three.js base ----------
+const wrap = document.getElementById("canvas-wrap");
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth, innerHeight);
+wrap.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d10);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.1, 5000);
+camera.position.set(60,60,90);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+sun.position.set(1.0, 0.2, 1.3); // mismo lightDir que el frag shader r3forth
+scene.add(sun);
+
+const cubeGeo = new THREE.BoxGeometry(1,1,1);
+let mesh = null;
+
+function frame(){
+  requestAnimationFrame(frame);
+  controls.update();
+  renderer.render(scene, camera);
+}
+frame();
+
+addEventListener("resize", ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// ---------- parser .vox ----------
+// Formato MagicaVoxel: 'VOX ' + version, luego chunks anidados (id, contentSize, childrenSize).
+// Estrategia simple (prioriza velocidad/simplicidad sobre soporte total de escenas con nGRP/nTRN):
+// recorremos todos los chunks y juntamos pares SIZE->XYZI en orden de aparición, más RGBA si existe.
+function parseVox(buf){
+  const dv = new DataView(buf);
+  let p = 0;
+  const magic = String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+  if(magic !== "VOX ") throw new Error("no es un .vox válido (falta magic 'VOX ')");
+  p = 8; // magic(4) + version(4)
+
+  const models = []; // {sx,sy,sz, voxels:[{x,y,z,c}]}
+  let palette = null; // Uint8[256*4] RGBA
+  let pendingSize = null;
+
+  function readChunk(off){
+    const id = String.fromCharCode(dv.getUint8(off),dv.getUint8(off+1),dv.getUint8(off+2),dv.getUint8(off+3));
+    const contentSize = dv.getInt32(off+4, true);
+    const childrenSize = dv.getInt32(off+8, true);
+    const contentStart = off+12;
+    const childrenStart = contentStart+contentSize;
+    const next = childrenStart+childrenSize;
+
+    if(id === "SIZE"){
+      pendingSize = {
+        sx: dv.getInt32(contentStart,true),
+        sy: dv.getInt32(contentStart+4,true),
+        sz: dv.getInt32(contentStart+8,true)
+      };
+    } else if(id === "XYZI"){
+      const n = dv.getInt32(contentStart,true);
+      const voxels = new Uint8Array(buf, contentStart+4, n*4);
+      const size = pendingSize || {sx:0,sy:0,sz:0};
+      models.push({...size, n, voxels});
+      pendingSize = null;
+    } else if(id === "RGBA"){
+      palette = new Uint8Array(buf.slice(contentStart, contentStart+256*4));
+    }
+    // recorrer hijos (para MAIN, y para ignorar nTRN/nGRP/nSHP/MATL/LAYR sin romper el parseo)
+    let c = childrenStart;
+    while(c < childrenStart + childrenSize) c = readChunk(c);
+    return next;
+  }
+  readChunk(p);
+  if(models.length === 0) throw new Error("no se encontraron chunks SIZE/XYZI (¿archivo vacío o formato de escena no soportado?)");
+  return {models, palette};
+}
+
+function defaultPalette(){
+  // fallback si el .vox no trae chunk RGBA: paleta generada, no la default real de MagicaVoxel.
+  const pal = new Uint8Array(256*4);
+  for(let i=0;i<256;i++){
+    const h = (i*37)%360, s=0.55, v= i===0?0:0.95;
+    const c = hsv2rgb(h,s,v);
+    pal[i*4]=c[0]; pal[i*4+1]=c[1]; pal[i*4+2]=c[2]; pal[i*4+3]=255;
+  }
+  return pal;
+}
+function hsv2rgb(h,s,v){
+  const c=v*s, x=c*(1-Math.abs((h/60)%2-1)), m=v-c;
+  let r,g,b;
+  if(h<60)[r,g,b]=[c,x,0]; else if(h<120)[r,g,b]=[x,c,0]; else if(h<180)[r,g,b]=[0,c,x];
+  else if(h<240)[r,g,b]=[0,x,c]; else if(h<300)[r,g,b]=[x,0,c]; else [r,g,b]=[c,0,x];
+  return [Math.round((r+m)*255),Math.round((g+m)*255),Math.round((b+m)*255)];
+}
+
+// ---------- construcción del InstancedMesh ----------
+// misma técnica que el .r3: 1 sola geometría, N instancias, color por instancia,
+// pero acá filtramos los voxels vacíos en CPU (el .vox ya viene disperso) en vez
+// de subir la grilla completa y descartar en el shader.
+function buildMesh(model, palette){
+  if(mesh){ scene.remove(mesh); mesh.geometry.dispose(); mesh.material.dispose(); mesh=null; }
+
+  const {sx,sy,sz,n,voxels} = model;
+  const geo = cubeGeo;
+  const mat = new THREE.MeshLambertMaterial({flatShading:true});
+  const im = new THREE.InstancedMesh(geo, mat, n);
+  im.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(n*3), 3);
+
+  const m4 = new THREE.Matrix4();
+  const cx = sx/2, cy = sy/2, cz = sz/2;
+  const col = new THREE.Color();
+
+  for(let i=0;i<n;i++){
+    const x = voxels[i*4], y = voxels[i*4+1], z = voxels[i*4+2], ci = voxels[i*4+3];
+    // remapeo de ejes: vox es Z-up, three es Y-up -> (x, z, y)
+    m4.makeTranslation(x-cx, z-cz, y-cy);
+    im.setMatrixAt(i, m4);
+    const pi = (ci>0? ci-1 : 0)*4;
+    col.setRGB(palette[pi]/255, palette[pi+1]/255, palette[pi+2]/255, THREE.SRGBColorSpace);
+    im.setColorAt(i, col);
+  }
+  im.instanceMatrix.needsUpdate = true;
+  if(im.instanceColor) im.instanceColor.needsUpdate = true;
+
+  scene.add(im);
+  mesh = im;
+
+  const radius = Math.max(sx,sy,sz);
+  controls.target.set(0,0,0);
+  camera.position.set(radius*1.4, radius*1.1, radius*1.6);
+  camera.near = Math.max(0.1, radius*0.01);
+  camera.far = radius*20;
+  camera.updateProjectionMatrix();
+  controls.update();
+
+  return {sx,sy,sz,n};
+}
+
+// ---------- UI ----------
+const dropEl = document.getElementById("drop");
+const fileEl = document.getElementById("file");
+const statsEl = document.getElementById("stats");
+const errEl = document.getElementById("err");
+const modelRow = document.getElementById("modelrow");
+const modelSel = document.getElementById("modelSel");
+
+let currentParse = null;
+
+dropEl.onclick = ()=> fileEl.click();
+fileEl.onchange = e => e.target.files[0] && loadFile(e.target.files[0]);
+["dragenter","dragover"].forEach(ev=>dropEl.addEventListener(ev,e=>{e.preventDefault();dropEl.classList.add("hover");}));
+["dragleave","drop"].forEach(ev=>dropEl.addEventListener(ev,e=>{e.preventDefault();dropEl.classList.remove("hover");}));
+dropEl.addEventListener("drop", e=>{
+  const f = e.dataTransfer.files[0];
+  if(f) loadFile(f);
+});
+
+function loadFile(file){
+  errEl.style.display="none";
+  const t0 = performance.now();
+  const reader = new FileReader();
+  reader.onload = ()=>{
+    try{
+      const parsed = parseVox(reader.result);
+      currentParse = parsed;
+      const pal = parsed.palette || defaultPalette();
+      if(!parsed.palette){
+        errEl.textContent = "aviso: el archivo no trae paleta RGBA, se usa una generada";
+        errEl.style.display="block";
+      }
+      populateModelSelect(parsed.models);
+      const info = buildMesh(parsed.models[0], pal);
+      const dt = (performance.now()-t0).toFixed(1);
+      renderStats(file, info, parsed.models.length, dt);
+    }catch(ex){
+      errEl.textContent = "error: "+ex.message;
+      errEl.style.display="block";
+      statsEl.textContent = "sin archivo cargado";
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function populateModelSelect(models){
+  if(models.length <= 1){ modelRow.style.display="none"; return; }
+  modelRow.style.display="block";
+  modelSel.innerHTML = "";
+  models.forEach((m,i)=>{
+    const o = document.createElement("option");
+    o.value = i;
+    o.textContent = `#${i} ${m.sx}x${m.sy}x${m.sz} (${m.n} voxels)`;
+    modelSel.appendChild(o);
+  });
+}
+modelSel.onchange = ()=>{
+  if(!currentParse) return;
+  const idx = +modelSel.value;
+  const pal = currentParse.palette || defaultPalette();
+  const info = buildMesh(currentParse.models[idx], pal);
+  renderStats(null, info, currentParse.models.length, null, true);
+};
+
+function renderStats(file, info, nModels, dt, keep){
+  const lines = [];
+  if(file) lines.push(`<b>${file.name}</b>`);
+  lines.push(`dim: ${info.sx} x ${info.sy} x ${info.sz}`);
+  lines.push(`voxels dibujados: <b>${info.n.toLocaleString()}</b>`);
+  if(nModels>1) lines.push(`modelos en archivo: ${nModels}`);
+  if(dt) lines.push(`parse+build: ${dt} ms`);
+  statsEl.innerHTML = lines.join("\n");
+}
+</script>
+</body>
+</html>
