@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>R3 Tools Suite</title>
+<style>
+  :root{ --bg:#111; --panel:#1b1b1b; --fg:#eee; --accent:#5ad; --line:#333; }
+  body{ background:var(--bg); color:var(--fg); font:14px/1.5 'Roboto Mono',monospace; padding:40px 20px; max-width:800px; margin:auto; }
+  h1{ border-bottom:2px solid var(--accent); padding-bottom:10px; color:var(--accent); }
+  .grid{ display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:20px; margin-top:30px; }
+  .card{ background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:20px; transition:0.2s; text-decoration:none; color:inherit; display:flex; flex-direction:column; }
+  .card:hover{ border-color:var(--accent); background:#222; }
+  .card h2{ margin:0 0 10px 0; font-size:16px; color:#fff; }
+  .card p{ font-size:12px; color:#aaa; margin:0; }
+</style>
+</head>
+<body>
+
+<h1>R3 Tools Suite</h1>
+<p>Internal development tools for graphics and animation processing.</p>
+
+<div class="grid">
+  <!-- Original Tools -->
+  <a href="3img2vox.html" class="card">
+    <h2>3img2vox</h2>
+    <p>Construct voxel models by intersecting 2D silhouettes from orthographic views.</p>
+  </a>
+  
+  <a href="dae2r3a.html" class="card">
+    <h2>dae2r3a</h2>
+    <p>Collada (.dae) to R3a converter. Extracts skeletal structures and animation data.</p>
+  </a>
+  
+  <a href="glb2r3a.html" class="card">
+    <h2>glb2r3a</h2>
+    <p>GLTF/GLB binary parser. Extracts skinning information directly from binary buffers.</p>
+  </a>
+
+  <!-- New Tools -->
+  <a href="voxel-editor.html" class="card">
+    <h2>voxel editor</h2>
+    <p>Integrated voxel editing interface for modifying voxel models.</p>
+  </a>
+  
+  <a href="img2vox.html" class="card">
+    <h2>img2vox</h2>
+    <p>Single-view image to voxel converter, ideal for quick 2D-to-3D asset prototyping.</p>
+  </a>
+  
+  <a href="vox2ssa.html" class="card">
+    <h2>vox2ssa</h2>
+    <p>Converts voxel models into sprite-stacking assets (.ssa) for retro r3 rendering.</p>
+  </a>
+</div>
+
+</body>
+</html>
