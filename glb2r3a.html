@@ -66,7 +66,7 @@ function convert(name, buf){
     const out=[];
     if(ai==null||ai<0||ai>=AC.length) return out;
     const a=AC[ai];
-    if(a.bufferView==null) return out;
+    if(a.bufferView==null||!bin) return out;
     const b=BV[a.bufferView];
     const nc=ncOf(a.type);
     const base=(b.byteOffset||0)+(a.byteOffset||0);
@@ -165,7 +165,7 @@ function convert(name, buf){
   function pack21(tx,ty,tz){
     const ix=Math.round(tx*65536.0)|0, iy=Math.round(ty*65536.0)|0, iz=Math.round(tz*65536.0)|0;
     const px=BigInt((ix>>8)&0x1fffff), py=BigInt((iy>>8)&0x1fffff), pz=BigInt((iz>>8)&0x1fffff);
-    return px | (py<<21n) | (pz<<42n);
+    return pz | (py<<21n) | (px<<42n);   // r3: x arriba, z abajo
   }
   function packq(rx,ry,rz,rw){
     const ix=Math.round(rx*65536.0)|0, iy=Math.round(ry*65536.0)|0, iz=Math.round(rz*65536.0)|0, iw=Math.round(rw*65536.0)|0;
@@ -188,12 +188,13 @@ function convert(name, buf){
   /* header */
   u8(0x72); u8(0x33); u8(0x61); u8(0x00); // "r3a\0"
   u16(nj);
-  u16(anims.length);
+  u16(anims.length+1);   // +1: anim 0 = pose base
 
   const stepsPerAnim=anims.map(collectSteps);
-  const headerSz=4+2+2+4*anims.length;
-  const bonesSz=nj*17;
+  const headerSz=4+2+2+4*(anims.length+1);
+  const bonesSz=nj;               // solo parents
   let curOff=headerSz+bonesSz;
+  u32(curOff); curOff+=4+2+nj*16; // anim 0: pose base
   const animSz=[];
   anims.forEach((anim,ai)=>{
     const sz=4+stepsPerAnim[ai].length*(2+nj*16);
@@ -201,9 +202,12 @@ function convert(name, buf){
   });
   anims.forEach((anim,ai)=>{ u32(curOff); curOff+=animSz[ai]; });
 
-  /* bones */
+  /* skel: parents */
+  joints.forEach(j=>u8(j.parent<0?0xff:j.parent));
+
+  /* anim 0: pose base (1 frame, speed 0) */
+  u16(1); u16(0); u16(0);
   joints.forEach(j=>{
-    u8(j.parent<0?0xff:j.parent);
     u64(pack21(j.tx,j.ty,j.tz));
     u64(packq(j.rx,j.ry,j.rz,j.rw));
   });
