@@ -15,13 +15,13 @@ button{background:#0f0;color:#000;border:0;padding:6px 12px;cursor:pointer;font:
 </head>
 <body>
 <h1>glb2r3a</h1>
-<div id="drop">arrastra un .glb aqui o hace click</div>
-<input type="file" id="file" accept=".glb" style="display:none">
+<div id="drop">arrastra un .glb o .dae aqui o hace click</div>
+<input type="file" id="file" accept=".glb,.dae" style="display:none">
 <div id="log"></div>
 <div id="dl"></div>
 
 <script>
-const MAX_FRAMES=4096, MAX_STEPS=4096;
+const MAX_FRAMES=4096;
 const log=m=>document.getElementById('log').textContent+=m+"\n";
 
 const drop=document.getElementById('drop'), inp=document.getElementById('file');
@@ -41,12 +41,25 @@ function handle(file){
 }
 
 function convert(name, buf){
+  const m=/\.dae$/i.test(name)?loadDAE(buf):loadGLB(buf);
+  if(m) writeR3A(name,m);
+}
+
+/* step sampling: ultima key con t<=t */
+function chSample(ch,t){
+  let ki=0;
+  for(let k=1;k<ch.keys.length;k++){ if(ch.keys[k].t<=t) ki=k; else break; }
+  return ch.keys[ki].v;
+}
+
+/* ============================ GLB ============================ */
+function loadGLB(buf){
   const dv=new DataView(buf);
-  if(dv.getUint32(0,true)!==0x46546C67){ log('[ERROR] no es GLB'); return; }
+  if(dv.getUint32(0,true)!==0x46546C67){ log('[ERROR] no es GLB'); return null; }
   log('[INFO] glTF v'+dv.getUint32(4,true)+'  '+buf.byteLength+' bytes');
 
   const j0len=dv.getUint32(12,true);
-  if(dv.getUint32(16,true)!==0x4E4F534A){ log('[ERROR] chunk0 no es JSON'); return; }
+  if(dv.getUint32(16,true)!==0x4E4F534A){ log('[ERROR] chunk0 no es JSON'); return null; }
   const json=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,20,j0len)));
 
   let bin=null;
@@ -79,9 +92,9 @@ function convert(name, buf){
     return out;
   }
 
-  /* ── skin -> joints ── */
+  /* skin -> joints */
   const skins=json.skins||[];
-  if(skins.length===0){ log('[WARN] sin skins'); return; }
+  if(skins.length===0){ log('[WARN] sin skins'); return null; }
   const skin=skins[0];
   const nj=skin.joints.length;
   const n2j={}; skin.joints.forEach((ni,ji)=>n2j[ni]=ji);
@@ -106,7 +119,7 @@ function convert(name, buf){
     });
   });
 
-  /* ── animations ── */
+  /* animations */
   const anims=[];
   (json.animations||[]).forEach((ao,ai)=>{
     const anim={name:ao.name||('anim_'+ai), duration:0, ch:[]};
@@ -133,12 +146,6 @@ function convert(name, buf){
   });
   log('[INFO] joints:'+nj+'  anims:'+anims.length);
 
-  /* ── bake ── */
-  function chSample(ch,t){
-    let ki=0;
-    for(let k=1;k<ch.keys.length;k++){ if(ch.keys[k].t<=t) ki=k; else break; }
-    return ch.keys[ki].v;
-  }
   function sampleJoint(anim, ji, t){
     const j=joints[ji];
     let tx=j.tx,ty=j.ty,tz=j.tz, rx=j.rx,ry=j.ry,rz=j.rz,rw=j.rw;
@@ -152,6 +159,192 @@ function convert(name, buf){
     if(len>1e-8){ rx/=len;ry/=len;rz/=len;rw/=len; } else { rx=0;ry=0;rz=0;rw=1; }
     return {tx,ty,tz,rx,ry,rz,rw};
   }
+  return {joints, anims, sampleJoint};
+}
+
+/* ============================ DAE (COLLADA) ============================ */
+const I4=()=>[1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+function mmul(a,b){            // matrices 4x4 fila-mayor
+  const r=new Array(16).fill(0);
+  for(let i=0;i<4;i++)for(let j=0;j<4;j++){
+    let s=0; for(let k=0;k<4;k++) s+=a[i*4+k]*b[k*4+j]; r[i*4+j]=s;
+  }
+  return r;
+}
+function elemMat(e){
+  const v=e.v;
+  if(e.k==='matrix') return v.length>=16?v.slice(0,16):I4();
+  if(e.k==='translate') return [1,0,0,v[0], 0,1,0,v[1], 0,0,1,v[2], 0,0,0,1];
+  if(e.k==='scale') return [v[0],0,0,0, 0,v[1],0,0, 0,0,v[2],0, 0,0,0,1];
+  if(e.k==='rotate'){
+    let [x,y,z,a]=v; const L=Math.hypot(x,y,z)||1; x/=L;y/=L;z/=L;
+    const r=a*Math.PI/180, c=Math.cos(r), s=Math.sin(r), C=1-c;
+    return [c+x*x*C, x*y*C-z*s, x*z*C+y*s, 0,
+            y*x*C+z*s, c+y*y*C, y*z*C-x*s, 0,
+            z*x*C-y*s, z*y*C+x*s, c+z*z*C, 0,
+            0,0,0,1];
+  }
+  return I4();
+}
+function compose(es){ let M=I4(); es.forEach(e=>{ M=mmul(M,elemMat(e)); }); return M; }
+function m2q(r00,r01,r02,r10,r11,r12,r20,r21,r22){
+  const tr=r00+r11+r22; let x,y,z,w,s;
+  if(tr>0){ s=Math.sqrt(tr+1)*2; w=s/4; x=(r21-r12)/s; y=(r02-r20)/s; z=(r10-r01)/s; }
+  else if(r00>r11&&r00>r22){ s=Math.sqrt(1+r00-r11-r22)*2; w=(r21-r12)/s; x=s/4; y=(r01+r10)/s; z=(r02+r20)/s; }
+  else if(r11>r22){ s=Math.sqrt(1+r11-r00-r22)*2; w=(r02-r20)/s; x=(r01+r10)/s; y=s/4; z=(r12+r21)/s; }
+  else { s=Math.sqrt(1+r22-r00-r11)*2; w=(r10-r01)/s; x=(r02+r20)/s; y=(r12+r21)/s; z=s/4; }
+  const L=Math.sqrt(x*x+y*y+z*z+w*w)||1;
+  return [x/L,y/L,z/L,w/L];
+}
+function decompose(M){
+  const sx=Math.hypot(M[0],M[4],M[8])||1, sy=Math.hypot(M[1],M[5],M[9])||1, sz=Math.hypot(M[2],M[6],M[10])||1;
+  const q=m2q(M[0]/sx,M[1]/sy,M[2]/sz, M[4]/sx,M[5]/sy,M[6]/sz, M[8]/sx,M[9]/sy,M[10]/sz);
+  return {tx:M[3],ty:M[7],tz:M[11],rx:q[0],ry:q[1],rz:q[2],rw:q[3],sx,sy,sz};
+}
+
+function loadDAE(buf){
+  const txt=new TextDecoder().decode(new Uint8Array(buf));
+  const doc=new DOMParser().parseFromString(txt,'text/xml');
+  const kids=(e,tag)=>Array.from(e.childNodes).filter(c=>c.nodeType===1&&(!tag||c.localName===tag));
+  const all=(e,tag)=>Array.from(e.getElementsByTagName('*')).filter(c=>c.localName===tag);
+  const nums=s=>s.trim().split(/[\s,]+/).filter(x=>x!=='').map(Number);
+  if(all(doc,'parsererror').length){ log('[ERROR] XML invalido'); return null; }
+  if(!all(doc,'COLLADA').length){ log('[ERROR] no es COLLADA'); return null; }
+
+  const upEl=all(doc,'up_axis')[0];
+  const upAxis=upEl?upEl.textContent.trim():'Y_UP';
+  const unitEl=all(doc,'unit')[0];
+  const unit=unitEl?(parseFloat(unitEl.getAttribute('meter'))||1):1;
+  log('[INFO] DAE '+buf.byteLength+' bytes  up='+upAxis+'  unit='+unit+'m');
+  if(upAxis==='X_UP') log('[WARN] X_UP no soportado, sin convertir');
+  const U=(upAxis==='Z_UP')?[1,0,0,0, 0,0,1,0, 0,-1,0,0, 0,0,0,1]:I4();  // Z_UP -> Y_UP
+
+  /* esqueleto: nodos type=JOINT en orden DFS (padre siempre antes que hijo) */
+  const vs=all(doc,'visual_scene')[0];
+  if(!vs){ log('[ERROR] sin visual_scene'); return null; }
+  const joints=[], info=[], sidmap={};
+  const readElems=n=>kids(n).filter(c=>['matrix','translate','rotate','scale'].includes(c.localName))
+      .map(c=>({k:c.localName, sid:c.getAttribute('sid')||'', v:nums(c.textContent)}));
+  function walk(node, parentJ, pre){
+    const isJ=/^joint$/i.test(node.getAttribute('type')||'');
+    const elems=readElems(node);
+    if(isJ){
+      const ji=joints.length;
+      const nm=node.getAttribute('name')||node.getAttribute('sid')||node.getAttribute('id')||('joint_'+ji);
+      joints.push({parent:parentJ,name:nm,tx:0,ty:0,tz:0,rx:0,ry:0,rz:0,rw:1});
+      info.push({elems, root:parentJ<0, pre:pre});
+      ['sid','id','name'].forEach(a=>{ const v=node.getAttribute(a); if(v && sidmap[v]===undefined) sidmap[v]=ji; });
+      kids(node,'node').forEach(c=>walk(c,ji,null));
+    } else {
+      // nodo no-joint (p.ej. Armature): su transform se acumula hacia la raiz del esqueleto
+      const m=(parentJ<0)?mmul(pre,compose(elems)):pre;
+      kids(node,'node').forEach(c=>walk(c,parentJ,m));
+    }
+  }
+  kids(vs,'node').forEach(n=>walk(n,-1,I4()));
+  if(!joints.length){ log('[ERROR] no hay nodos type="JOINT"'); return null; }
+
+  function jointTRS(ji, es){
+    let M=compose(es);
+    if(info[ji].root) M=mmul(mmul(U,info[ji].pre),M);
+    M[3]*=unit; M[7]*=unit; M[11]*=unit;
+    return decompose(M);
+  }
+  let scaleDev=0;
+  joints.forEach((j,ji)=>{
+    const r=jointTRS(ji,info[ji].elems);
+    j.tx=r.tx;j.ty=r.ty;j.tz=r.tz;j.rx=r.rx;j.ry=r.ry;j.rz=r.rz;j.rw=r.rw;
+    scaleDev=Math.max(scaleDev,Math.abs(r.sx-1),Math.abs(r.sy-1),Math.abs(r.sz-1));
+  });
+  if(scaleDev>1e-3) log('[WARN] hay escala en el esqueleto (dev '+scaleDev.toFixed(3)+'): el formato r3a no la guarda, se ignora');
+
+  /* sources */
+  const srcs={};
+  all(doc,'source').forEach(s=>{
+    const fa=kids(s,'float_array')[0]; if(!fa) return;
+    const tc=kids(s,'technique_common')[0]; const acc=tc&&kids(tc,'accessor')[0];
+    const stride=acc?(parseInt(acc.getAttribute('stride'))||1):1;
+    srcs[s.getAttribute('id')]={data:nums(fa.textContent), stride};
+  });
+
+  /* target "nodo/sid.MIEMBRO" o "nodo/sid(i)(j)" */
+  function parseTarget(t){
+    const parts=t.split('/'); let ji=-1, idx=-1;
+    for(let i=parts.length-2;i>=0&&ji<0;i--){ if(sidmap[parts[i]]!==undefined){ ji=sidmap[parts[i]]; idx=i; } }  // nodo mas profundo del camino
+    if(ji<0) return null;
+    const mm=parts.slice(idx+1).join('/').match(/^([^.(]+)(?:\.([A-Za-z]+))?(?:\((\d+)\))?(?:\((\d+)\))?/);
+    if(!mm) return null;
+    return {ji, sid:mm[1], member:mm[2]||null, i1:mm[3]!==undefined?parseInt(mm[3]):null, i2:mm[4]!==undefined?parseInt(mm[4]):null};
+  }
+  const MEMBER={X:0,Y:1,Z:2,ANGLE:3,W:3};
+
+  /* canales */
+  const raw=[]; let skipped=0;
+  all(doc,'animation').forEach(an=>{
+    const chans=kids(an,'channel'); if(!chans.length) return;
+    const anc=[]; for(let e=an;e&&e.localName==='animation';e=e.parentNode) anc.push(e.getAttribute('id'));
+    chans.forEach(c=>{
+      const sid=(c.getAttribute('source')||'').replace(/^#/,'');
+      const samp=kids(an,'sampler').find(s=>s.getAttribute('id')===sid);
+      if(!samp){ skipped++; return; }
+      let tin=null, tout=null;
+      kids(samp,'input').forEach(i=>{
+        const sem=i.getAttribute('semantic'), sr=srcs[(i.getAttribute('source')||'').replace(/^#/,'')];
+        if(sem==='INPUT') tin=sr; else if(sem==='OUTPUT') tout=sr;
+      });
+      if(!tin||!tout){ skipped++; return; }
+      const tg=parseTarget(c.getAttribute('target')||''); if(!tg){ skipped++; return; }
+      const els=info[tg.ji].elems;
+      const el=els.find(e=>e.sid===tg.sid)||((tg.sid==='transform'||tg.sid==='matrix')?els.find(e=>e.k==='matrix'):null);
+      if(!el){ skipped++; return; }
+      let comp=-1;
+      if(tout.stride===1 && el.k!=='matrix'){
+        comp = tg.i1!==null ? tg.i1 : (tg.member in MEMBER ? MEMBER[tg.member] : -2);
+        if(comp<0||comp>=el.v.length){ skipped++; return; }
+      } else if(tout.stride!==el.v.length){ skipped++; return; }
+      const n=Math.min(tin.data.length, MAX_FRAMES), keys=[];
+      for(let k=0;k<n;k++) keys.push({t:tin.data[k], v:tout.data.slice(k*tout.stride,(k+1)*tout.stride)});
+      raw.push({joint:tg.ji, sid:el.sid||tg.sid, comp, keys, anc});
+    });
+  });
+
+  /* anims: una por <animation_clip>, o una sola con todos los canales */
+  const clips=all(doc,'animation_clip').map(c=>({
+    name:c.getAttribute('name')||c.getAttribute('id')||'clip',
+    ids:all(c,'instance_animation').map(i=>(i.getAttribute('url')||'').replace(/^#/,''))}));
+  const groups=clips.length ? clips.map(c=>({name:c.name, ch:raw.filter(r=>r.anc.some(a=>c.ids.includes(a)))}))
+                            : [{name:'anim_0', ch:raw}];
+  const anims=[];
+  groups.forEach(g=>{
+    if(!g.ch.length){ log('[WARN] clip "'+g.name+'" sin canales, omitido'); return; }
+    let dur=0; g.ch.forEach(ch=>ch.keys.forEach(k=>{ if(k.t>dur) dur=k.t; }));
+    const byJoint=joints.map((_,ji)=>g.ch.filter(c=>c.joint===ji));
+    anims.push({name:g.name, duration:dur, ch:g.ch, byJoint});
+  });
+  log('[INFO] joints:'+joints.length+'  anims:'+anims.length+'  canales:'+raw.length+(skipped?'  (omitidos:'+skipped+')':''));
+  if(!anims.length) log('[WARN] sin animaciones: se escribe solo la pose base');
+
+  function sampleJoint(anim, ji, t){
+    const chs=anim.byJoint[ji];
+    if(!chs.length){ const j=joints[ji]; return {tx:j.tx,ty:j.ty,tz:j.tz,rx:j.rx,ry:j.ry,rz:j.rz,rw:j.rw}; }
+    const es=info[ji].elems.map(e=>({k:e.k,sid:e.sid,v:e.v.slice()}));
+    chs.forEach(ch=>{
+      const v=chSample(ch,t);
+      const el=es.find(e=>e.sid===ch.sid)||es.find(e=>e.k==='matrix');
+      if(!el) return;
+      if(ch.comp<0){ for(let i=0;i<v.length&&i<el.v.length;i++) el.v[i]=v[i]; }
+      else el.v[ch.comp]=v[0];
+    });
+    return jointTRS(ji,es);
+  }
+  return {joints, anims, sampleJoint};
+}
+
+/* ============================ escritura .r3a ============================ */
+function writeR3A(name, model){
+  const {joints, anims, sampleJoint}=model;
+  const nj=joints.length;
+
   function collectSteps(anim){
     const s=[];
     anim.ch.forEach(ch=>ch.keys.forEach(k=>{
@@ -161,11 +354,11 @@ function convert(name, buf){
     return s;
   }
 
-  /* ── packing ── */
+  /* packing (igual que ::pack21 / ::packq de r3forth: x arriba, z abajo) */
   function pack21(tx,ty,tz){
     const ix=Math.round(tx*65536.0)|0, iy=Math.round(ty*65536.0)|0, iz=Math.round(tz*65536.0)|0;
     const px=BigInt((ix>>8)&0x1fffff), py=BigInt((iy>>8)&0x1fffff), pz=BigInt((iz>>8)&0x1fffff);
-    return pz | (py<<21n) | (px<<42n);   // r3: x arriba, z abajo
+    return pz | (py<<21n) | (px<<42n);
   }
   function packq(rx,ry,rz,rw){
     const ix=Math.round(rx*65536.0)|0, iy=Math.round(ry*65536.0)|0, iz=Math.round(rz*65536.0)|0, iw=Math.round(rw*65536.0)|0;
@@ -178,8 +371,7 @@ function convert(name, buf){
     return i;
   }
 
-  /* ── write binary ── */
-  const chunks=[]; // array of Uint8Array
+  const chunks=[];
   function u8(v){ chunks.push(Uint8Array.of(v&0xff)); }
   function u16(v){ const b=new Uint8Array(2); b[0]=v&0xff; b[1]=(v>>8)&0xff; chunks.push(b); }
   function u32(v){ const b=new Uint8Array(4); for(let i=0;i<4;i++) b[i]=(v>>>(i*8))&0xff; chunks.push(b); }
@@ -197,8 +389,7 @@ function convert(name, buf){
   u32(curOff); curOff+=4+2+nj*16; // anim 0: pose base
   const animSz=[];
   anims.forEach((anim,ai)=>{
-    const sz=4+stepsPerAnim[ai].length*(2+nj*16);
-    animSz.push(sz);
+    animSz.push(4+stepsPerAnim[ai].length*(2+nj*16));
   });
   anims.forEach((anim,ai)=>{ u32(curOff); curOff+=animSz[ai]; });
 
@@ -231,7 +422,7 @@ function convert(name, buf){
   });
 
   const blob=new Blob(chunks, {type:'application/octet-stream'});
-  const outName=name.replace(/\.glb$/i,'')+'.r3a';
+  const outName=name.replace(/\.(glb|dae)$/i,'')+'.r3a';
   const url=URL.createObjectURL(blob);
 
   log('[OK] '+outName+' ('+blob.size+' bytes)');
